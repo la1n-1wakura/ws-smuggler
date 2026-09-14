@@ -1,0 +1,9 @@
+{
+  "name": "websocket-echo-node",
+  "version": "1.0.0",
+  "description": "WebSocket echo server for diploma testing",
+  "main": "app.js",
+  "dependencies": {
+    "ws": "^8.14.2"
+  }
+}
