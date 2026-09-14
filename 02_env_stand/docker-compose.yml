@@ -1,0 +1,60 @@
+services:
+  # === СТЕК 1: Nginx + Python (порт 8080) ===
+  python-app:
+    build: ./nginx-python
+    container_name: python-app
+    networks:
+      - webnet
+
+  nginx-python:
+    image: nginx:alpine
+    container_name: nginx-python
+    volumes:
+      - ./nginx-python/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:80"
+    depends_on:
+      - python-app
+    networks:
+      - webnet
+
+  # === СТЕК 2: Nginx + Node.js (порт 8081) ===
+  node-app:
+    build: ./nginx-nodejs
+    container_name: node-app
+    networks:
+      - webnet
+
+  nginx-node:
+    image: nginx:alpine
+    container_name: nginx-node
+    volumes:
+      - ./nginx-nodejs/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8081:80"
+    depends_on:
+      - node-app
+    networks:
+      - webnet
+
+  # === СТЕК 3: HAProxy + Spring (порт 8082) ===
+  spring-app:
+    build: ./haproxy-spring
+    container_name: spring-app
+    networks:
+      - webnet
+
+  haproxy:
+    image: haproxy:latest
+    container_name: haproxy
+    volumes:
+      - ./haproxy-spring/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    ports:
+      - "8082:8083"
+    depends_on:
+      - spring-app
+    networks:
+      - webnet
+
+networks:
+  webnet:
