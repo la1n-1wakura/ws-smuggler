@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--insecure", action="store_true", help="Отключить проверку TLS-сертификата (только для лабораторного стенда)")
     parser.add_argument("--ca-file", type=str, help="Путь к доверенному CA-сертификату для проверки TLS")
     parser.add_argument("--manual", action="store_true", help="После handshake запустить ручную отправку WebSocket-фреймов")
+    parser.add_argument("--log-traffic", action="store_true", help="Сохранять raw TX/RX, hex и PCAP в dumps/")
 
     # 3. Разбираем то, что ввел пользователь в терминале
     args = parser.parse_args()
@@ -40,6 +41,7 @@ def main():
         insecure=args.insecure,
         ca_file=args.ca_file,
         initial_mode="manual",
+        log_traffic=args.log_traffic,
     )
     shell.run(auto_connect=args.manual)
 

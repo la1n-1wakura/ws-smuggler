@@ -46,7 +46,14 @@ def build_report(
 def _report_path(stem: str, suffix: str, output_dir: str | Path = REPORTS_DIR) -> Path:
 	directory = Path(output_dir)
 	directory.mkdir(parents=True, exist_ok=True)
-	return directory / f"{stem}.{suffix}"
+	base_path = directory / f"{stem}.{suffix}"
+	if not base_path.exists():
+		return base_path
+	for index in range(2, 10000):
+		candidate = directory / f"{stem}-{index}.{suffix}"
+		if not candidate.exists():
+			return candidate
+	raise FileExistsError("could not allocate a unique report filename")
 
 
 def export_json(report: dict[str, Any], stem: str = "ws-smuggler-report", output_dir: str | Path = REPORTS_DIR) -> Path:

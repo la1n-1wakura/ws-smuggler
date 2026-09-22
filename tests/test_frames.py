@@ -215,3 +215,69 @@ def test_reporter_exports_json_and_html(tmp_path):
     assert "viewport" in html
     assert "filter" in html
     assert "read timeout" in html
+
+
+def test_shell_validates_connection_options(tmp_path):
+    from ui.shell import WSSmugglerShell
+
+    shell = WSSmugglerShell()
+    shell.set_option(["port", "70000"])
+    assert shell.options["port"] is None
+    shell.set_option(["host", "not a host"])
+    assert shell.options["host"] is None
+    shell.set_option(["path", "ws"])
+    assert shell.options["path"] == "/"
+    shell.set_option(["timeout", "0"])
+    assert shell.options["timeout"] == 10.0
+    shell.set_option(["ca_file", str(tmp_path / "missing.crt")])
+    assert shell.options["ca_file"] is None
+
+    ca_file = tmp_path / "ca.crt"
+    ca_file.write_text("certificate", encoding="utf-8")
+    shell.set_option(["ssl", "on"])
+    shell.set_option(["ca_file", str(ca_file)])
+    assert shell.options["ca_file"] == str(ca_file)
+
+
+def test_traffic_logger_preserves_raw_bytes_and_writes_pcap(tmp_path):
+    from core.traffic_logger import TrafficLogger, format_hex_dump
+
+    hex_dump = format_hex_dump(b"ABC")
+    assert hex_dump.startswith("00000000  41 42 43")
+    assert hex_dump.endswith("|ABC|")
+    logger = TrafficLogger(session_name="test-session", output_dir=tmp_path, show_hex=False)
+    logger.log("tx", bytes([0, 65, 66, 67]))
+    logger.log("rx", b"reply")
+    logger.close()
+
+    assert (tmp_path / "test-session.tx.bin").read_bytes() == bytes([0, 65, 66, 67])
+    assert (tmp_path / "test-session.rx.bin").read_bytes() == b"reply"
+    pcap = (tmp_path / "test-session.pcap").read_bytes()
+    assert len(pcap) > 24
+    assert pcap[:4] == bytes([0xD4, 0xC3, 0xB2, 0xA1])
+
+
+def test_reports_and_logs_do_not_overwrite_existing_files(tmp_path):
+    from core.traffic_logger import TrafficLogger
+    from ui.reporter import build_report, export_json
+
+    report = build_report([])
+    first = export_json(report, output_dir=tmp_path)
+    second = export_json(report, output_dir=tmp_path)
+    assert first != second
+    assert first.exists() and second.exists()
+
+    logger = TrafficLogger(session_name="session", output_dir=tmp_path, show_hex=False)
+    logger.close()
+    second_logger = TrafficLogger(session_name="session", output_dir=tmp_path, show_hex=False)
+    second_logger.close()
+    assert second_logger.stem == "session-2"
+
+
+def test_control_frame_rejects_fragmentation_and_oversized_length():
+    from core.frame_builder import FrameBuilder
+
+    with pytest.raises(ValueError, match="control frames"):
+        FrameBuilder.build_frame(b"ping", opcode=FrameBuilder.OPCODE_PING, fin=False)
+    with pytest.raises(ValueError, match="control frames"):
+        FrameBuilder.build_frame(b"x" * 126, opcode=FrameBuilder.OPCODE_PING)

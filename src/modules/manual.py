@@ -82,13 +82,17 @@ def run_manual_mode(connection: WSConnection) -> None:
 			custom_length=custom_length,
 		)
 		connection.send_frame(frame)
-		render_frame_result("отправлен", frame, len(frame))
+		render_frame_result("отправлен (raw frame)", frame, len(frame), show_text=False)
 
 		try:
 			response = connection.receive_frame() if hasattr(connection, "receive_frame") else connection.receive()
 		except TimeoutError:
 			console.print("[yellow]Ответ не получен до истечения таймаута.[/yellow]")
 			continue
+		except ConnectionError as error:
+			console.print(f"[yellow]Сервер завершил соединение: {error}[/yellow]")
+			connection.close()
+			return
 		if not response:
 			console.print("[yellow]Сервер закрыл соединение.[/yellow]")
 			return

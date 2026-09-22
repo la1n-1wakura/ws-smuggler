@@ -31,6 +31,7 @@ ENV/
 
 # Generated local data
 reports/*.json
+reports/*.html
 config/*.json
 !config/default_payloads.json
 logs/
@@ -44,5 +45,7 @@ WebStand/certs/*.csr
 *.pid
 *.log
 
-# Optional: ignore generated test artifacts if needed
-# dumps/*.pcap
+# Generated traffic artifacts
+dumps/*.pcap
+dumps/*.hex
+dumps/*.bin

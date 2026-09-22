@@ -7,9 +7,10 @@ import hashlib
 import secrets
 
 from core.frame_parser import IncompleteFrameError, WebSocketFrame, parse_frame
+from core.traffic_logger import TrafficLogger
 
 class WSConnection:
-    def __init__(self, host: str, port: int, path: str = "/", use_ssl: bool = False, timeout: float = 10.0, insecure: bool = False, ca_file: str | None = None):
+    def __init__(self, host: str, port: int, path: str = "/", use_ssl: bool = False, timeout: float = 10.0, insecure: bool = False, ca_file: str | None = None, traffic_logger: TrafficLogger | None = None):
         if insecure and ca_file is not None:
             raise ValueError("insecure and ca_file cannot be used together")
 
@@ -22,6 +23,18 @@ class WSConnection:
         self.ca_file = ca_file
         self.sock = None    # Здесь будет храниться наш открытый сокет
         self._receive_buffer = bytearray()
+        self.traffic_logger = traffic_logger
+
+    def _send_raw(self, data: bytes) -> None:
+        self.sock.sendall(data)
+        if self.traffic_logger:
+            self.traffic_logger.log("tx", data)
+
+    def _receive_raw(self, size: int = 4096) -> bytes:
+        data = self.sock.recv(size)
+        if self.traffic_logger:
+            self.traffic_logger.log("rx", data)
+        return data
 
     def _build_websocket_key(self) -> str:
         return base64.b64encode(secrets.token_bytes(16)).decode("ascii")
@@ -74,12 +87,12 @@ class WSConnection:
             )
 
             # Отправляем байты запроса в созданную трубу
-            self.sock.sendall(handshake.encode('utf-8'))
+            self._send_raw(handshake.encode("utf-8"))
 
             # Слушаем, что ответит сервер (ждем статус 101)
             buffer = b""
             while b"\r\n\r\n" not in buffer:
-                chunk = self.sock.recv(4096)
+                chunk = self._receive_raw(4096)
                 if not chunk:
                     break
                 buffer += chunk
@@ -119,6 +132,9 @@ class WSConnection:
                     raw_sock.close()
                 except Exception:
                     pass
+            if self.traffic_logger:
+                self.traffic_logger.close()
+                self.traffic_logger = None
             raise
 
     def close(self):
@@ -127,18 +143,21 @@ class WSConnection:
             self.sock.close()
             self.sock = None
             self._receive_buffer.clear()
+        if self.traffic_logger:
+            self.traffic_logger.close()
+            self.traffic_logger = None
 
     def send_frame(self, frame: bytes) -> None:
         """Отправляет уже собранный WebSocket frame через активное соединение."""
         if self.sock is None:
             raise RuntimeError("WebSocket connection is not established")
-        self.sock.sendall(frame)
+        self._send_raw(frame)
 
     def receive(self, size: int = 4096) -> bytes:
         """Читает один фрагмент ответа сервера после handshake."""
         if self.sock is None:
             raise RuntimeError("WebSocket connection is not established")
-        return self.sock.recv(size)
+        return self._receive_raw(size)
 
     def receive_frame(self) -> WebSocketFrame:
         """Считать из сокета ровно один полный WebSocket frame."""
@@ -149,7 +168,7 @@ class WSConnection:
             try:
                 frame, end = parse_frame(bytes(self._receive_buffer))
             except IncompleteFrameError:
-                chunk = self.sock.recv(4096)
+                chunk = self._receive_raw(4096)
                 if not chunk:
                     raise ConnectionError("server closed connection before a complete frame")
                 self._receive_buffer.extend(chunk)
