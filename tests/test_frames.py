@@ -47,3 +47,24 @@ def test_connect_closes_socket_on_error(monkeypatch):
 
     assert fake_socket.closed is True
     assert connection.sock is None
+
+
+def test_build_frame_masks_payload_and_sets_opcode():
+    from core.frame_builder import FrameBuilder
+
+    frame = FrameBuilder.build_frame(b"hello", opcode=0x1, mask=True)
+
+    assert frame[0] == 0x81
+    assert frame[1] & 0x80 == 0x80
+    assert len(frame) == 2 + 4 + 5
+    assert frame[2:6] != b"\x00\x00\x00\x00"
+
+
+def test_build_frame_supports_custom_length_for_fuzzing():
+    from core.frame_builder import FrameBuilder
+
+    frame = FrameBuilder.build_frame(b"abc", opcode=0x2, custom_length=10, mask=False)
+    header = frame[0:2]
+    assert header[0] == 0x82
+    assert header[1] == 10
+    assert frame[2:] == b"abc"

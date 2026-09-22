@@ -122,3 +122,15 @@ class WSConnection:
         if self.sock:
             self.sock.close()
             self.sock = None
+
+    def send_frame(self, frame: bytes) -> None:
+        """Отправляет уже собранный WebSocket frame через активное соединение."""
+        if self.sock is None:
+            raise RuntimeError("WebSocket connection is not established")
+        self.sock.sendall(frame)
+
+    def receive(self, size: int = 4096) -> bytes:
+        """Читает один фрагмент ответа сервера после handshake."""
+        if self.sock is None:
+            raise RuntimeError("WebSocket connection is not established")
+        return self.sock.recv(size)
