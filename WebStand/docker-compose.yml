@@ -1,4 +1,16 @@
 services:
+  cert-generator:
+    build: ./cert-generator
+    container_name: webstand-cert-generator
+    volumes:
+      - web-certs:/certs
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /certs/server.crt && test -s /certs/server.key && test -s /certs/server.pem"]
+      interval: 1s
+      timeout: 1s
+      retries: 10
+    networks:
+      - webnet
   # === СТЕК 1: Nginx + Python (порт 8080) ===
   python-app:
     build: ./nginx-python
@@ -11,11 +23,14 @@ services:
     container_name: nginx-python
     volumes:
       - ./nginx-python/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./certs:/etc/nginx/certs:ro
+      - web-certs:/etc/nginx/certs:ro
     ports:
       - "8080:443"
     depends_on:
-      - python-app
+      python-app:
+        condition: service_started
+      cert-generator:
+        condition: service_healthy
     networks:
       - webnet
 
@@ -31,11 +46,14 @@ services:
     container_name: nginx-node
     volumes:
       - ./nginx-nodejs/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./certs:/etc/nginx/certs:ro    
+      - web-certs:/etc/nginx/certs:ro
     ports:
       - "8081:443"
     depends_on:
-      - node-app
+      node-app:
+        condition: service_started
+      cert-generator:
+        condition: service_healthy
     networks:
       - webnet
 
@@ -51,13 +69,19 @@ services:
     container_name: haproxy
     volumes:
       - ./haproxy-spring/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
-      - ./certs/server.pem:/etc/haproxy/certs/server.pem:ro
+      - web-certs:/etc/haproxy/certs:ro
     ports:
       - "8082:443"
     depends_on:
-      - spring-app
+      spring-app:
+        condition: service_started
+      cert-generator:
+        condition: service_healthy
     networks:
       - webnet
 
 networks:
   webnet:
+
+volumes:
+  web-certs:

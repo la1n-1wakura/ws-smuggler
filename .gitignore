@@ -182,6 +182,11 @@ cython_debug/
 # Poetry local configuration file - https://python-poetry.org/docs/configuration/#local-configuration
 poetry.toml
 
+# WebStand generates fresh local TLS material on startup.
+/WebStand/certs/*.crt
+/WebStand/certs/*.key
+/WebStand/certs/*.pem
+
 # ruff
 .ruff_cache/
 

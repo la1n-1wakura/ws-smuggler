@@ -15,9 +15,17 @@ def main():
     parser.add_argument("--port", type=int, required=True, help="Порт сервера (например, 80 или 443)")
     parser.add_argument("--path", type=str, default="/", help="Путь для Upgrade Handshake (по умолчанию: /)")
     parser.add_argument("--ssl", action="store_true", help="Включить SSL/TLS (использовать wss://)")
+    parser.add_argument("--timeout", type=float, default=10.0, help="Таймаут подключения и чтения в секундах (по умолчанию: 10)")
+    parser.add_argument("--insecure", action="store_true", help="Отключить проверку TLS-сертификата (только для лабораторного стенда)")
+    parser.add_argument("--ca-file", type=str, help="Путь к доверенному CA-сертификату для проверки TLS")
 
     # 3. Разбираем то, что ввел пользователь в терминале
     args = parser.parse_args()
+
+    if args.insecure and args.ca_file:
+        parser.error("--insecure и --ca-file нельзя использовать одновременно")
+    if args.ca_file and not args.ssl:
+        parser.error("--ca-file требует использования --ssl")
 
     print(f"[*] Инициализация подключения к {args.host}:{args.port}{args.path} (SSL: {args.ssl})")
 
@@ -26,7 +34,10 @@ def main():
         host=args.host,
         port=args.port,
         path=args.path,
-        use_ssl=args.ssl
+        use_ssl=args.ssl,
+        timeout=args.timeout,
+        insecure=args.insecure,
+        ca_file=args.ca_file
     )
 
     try:
