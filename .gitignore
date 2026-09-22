@@ -24,13 +24,15 @@ ENV/
 # Local editor and OS files
 .DS_Store
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
 *.swp
 *.tmp
 
 # Generated local data
 reports/*.json
 config/*.json
+!config/default_payloads.json
 logs/
 WebStand/logs/
 WebStand/certs/*.crt
