@@ -1,3 +1,51 @@
 {
-    "desc": "Конфигурационные файлы и шаблоны Заготовки для автоматических тест-кейсов Шаблоны атак и настроек (JSON)"
+    "cases": [
+        {
+            "name": "text_echo",
+            "payload": "hello",
+            "opcode": 1,
+            "fin": true,
+            "mask": true
+        },
+        {
+            "name": "binary_echo",
+            "payload": "010203",
+            "payload_encoding": "hex",
+            "opcode": 2,
+            "fin": true,
+            "mask": true
+        },
+        {
+            "name": "ping",
+            "payload": "ping",
+            "opcode": 9,
+            "fin": true,
+            "mask": true
+        },
+        {
+            "name": "declared_length_mismatch",
+            "scenario": "length_desync",
+            "payload": "abc",
+            "opcode": 1,
+            "fin": true,
+            "mask": true,
+            "declared_length": 10
+        },
+        {
+            "name": "under_declared_length_with_padding",
+            "scenario": "length_desync",
+            "payload": "abc",
+            "padding_hex": "646566",
+            "opcode": 1,
+            "mask": true,
+            "declared_length": 3
+        },
+        {
+            "name": "nested_frame_injection",
+            "scenario": "nested_frame",
+            "payload": "visible:",
+            "inner_payload": "hidden",
+            "inner_opcode": 1
+        }
+    ]
 }

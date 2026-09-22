@@ -6,6 +6,8 @@ import base64
 import hashlib
 import secrets
 
+from core.frame_parser import IncompleteFrameError, WebSocketFrame, parse_frame
+
 class WSConnection:
     def __init__(self, host: str, port: int, path: str = "/", use_ssl: bool = False, timeout: float = 10.0, insecure: bool = False, ca_file: str | None = None):
         if insecure and ca_file is not None:
@@ -19,6 +21,7 @@ class WSConnection:
         self.insecure = insecure
         self.ca_file = ca_file
         self.sock = None    # Здесь будет храниться наш открытый сокет
+        self._receive_buffer = bytearray()
 
     def _build_websocket_key(self) -> str:
         return base64.b64encode(secrets.token_bytes(16)).decode("ascii")
@@ -54,6 +57,7 @@ class WSConnection:
                 self.sock = raw_sock
 
             self.sock.settimeout(self.timeout)
+            self._receive_buffer.clear()
 
             websocket_key = self._build_websocket_key()
             expected_accept = self._expected_accept(websocket_key)
@@ -122,6 +126,7 @@ class WSConnection:
         if self.sock:
             self.sock.close()
             self.sock = None
+            self._receive_buffer.clear()
 
     def send_frame(self, frame: bytes) -> None:
         """Отправляет уже собранный WebSocket frame через активное соединение."""
@@ -134,3 +139,21 @@ class WSConnection:
         if self.sock is None:
             raise RuntimeError("WebSocket connection is not established")
         return self.sock.recv(size)
+
+    def receive_frame(self) -> WebSocketFrame:
+        """Считать из сокета ровно один полный WebSocket frame."""
+        if self.sock is None:
+            raise RuntimeError("WebSocket connection is not established")
+
+        while True:
+            try:
+                frame, end = parse_frame(bytes(self._receive_buffer))
+            except IncompleteFrameError:
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    raise ConnectionError("server closed connection before a complete frame")
+                self._receive_buffer.extend(chunk)
+                continue
+
+            del self._receive_buffer[:end]
+            return frame
