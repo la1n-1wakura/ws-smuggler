@@ -50,3 +50,14 @@ def show_not_implemented(feature: str) -> None:
 			border_style="yellow",
 		)
 	)
+
+
+def render_frame_result(direction: str, payload: bytes, frame_size: int) -> None:
+	"""Показывает отправленный или полученный фрагмент в едином формате."""
+	table = Table(title=f"WebSocket {direction}", border_style="cyan")
+	table.add_column("Параметр", style="bold cyan")
+	table.add_column("Значение")
+	table.add_row("Размер", str(frame_size))
+	table.add_row("Hex", payload.hex(" ") or "<пусто>")
+	table.add_row("Текст", payload.decode("utf-8", errors="replace") or "<пусто>")
+	console.print(table)

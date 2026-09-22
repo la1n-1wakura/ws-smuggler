@@ -1,35 +1,77 @@
 """Интерактивная отправка вручную собранных WebSocket-фреймов."""
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.history import InMemoryHistory
+
 from core.connection import WSConnection
 from core.frame_builder import FrameBuilder
+from ui.views import console, render_frame_result
 
 
-def _read_bool(prompt: str, default: bool) -> bool:
+OPCODE_NAMES = {
+	"1": FrameBuilder.OPCODE_TEXT,
+	"2": FrameBuilder.OPCODE_BINARY,
+	"8": FrameBuilder.OPCODE_CLOSE,
+	"9": FrameBuilder.OPCODE_PING,
+	"10": FrameBuilder.OPCODE_PONG,
+}
+
+
+def _prompt_session() -> PromptSession:
+	return PromptSession(history=InMemoryHistory())
+
+
+def _read_opcode(session: PromptSession) -> int:
+	completer = WordCompleter(list(OPCODE_NAMES), ignore_case=True)
+	while True:
+		value = session.prompt("opcode [1=text, 2=binary, 8=close, 9=ping, 10=pong] [1]: ", completer=completer).strip().lower()
+		if not value:
+			return FrameBuilder.OPCODE_TEXT
+		if value in OPCODE_NAMES:
+			return OPCODE_NAMES[value]
+		console.print("[yellow]Допустимые opcode: 1, 2, 8, 9, 10.[/yellow]")
+
+
+def _read_int(session: PromptSession, prompt: str) -> int | None:
+	while True:
+		value = session.prompt(prompt).strip()
+		if not value:
+			return None
+		try:
+			return int(value, 0)
+		except ValueError:
+			console.print("[yellow]Введите целое число или оставьте поле пустым.[/yellow]")
+
+
+def _read_bool(session: PromptSession, prompt: str, default: bool) -> bool:
 	suffix = "Y/n" if default else "y/N"
-	value = input(f"{prompt} [{suffix}]: ").strip().lower()
-	if not value:
-		return default
-	if value in {"y", "yes", "д", "да", "1"}:
-		return True
-	if value in {"n", "no", "н", "нет", "0"}:
-		return False
-	raise ValueError("ожидалось yes/no")
+	while True:
+		value = session.prompt(f"{prompt} [{suffix}]: ").strip().lower()
+		if not value:
+			return default
+		if value in {"y", "yes", "д", "да", "1"}:
+			return True
+		if value in {"n", "no", "н", "нет", "0"}:
+			return False
+		console.print("[yellow]Введите yes/no или оставьте поле пустым.[/yellow]")
 
 
 def run_manual_mode(connection: WSConnection) -> None:
 	"""Запускает цикл ввода и отправки кадров по активному соединению."""
-	print("[*] Ручной режим. Для выхода введите :quit вместо payload.")
+	console.print("[cyan]Ручной режим. Для выхода введите :quit вместо payload.[/cyan]")
+	session = _prompt_session()
+	payload_completer = WordCompleter(["hello", "test", "ping", "pong"], ignore_case=True)
 
 	while True:
-		payload_text = input("payload> ")
+		payload_text = session.prompt("payload> ", completer=payload_completer)
 		if payload_text == ":quit":
 			return
 
-		opcode = int(input("opcode [1=text, 2=binary, 8=close, 9=ping, 10=pong] [1]: ") or "1", 0)
-		fin = _read_bool("FIN", True)
-		mask = _read_bool("Mask", True)
-		custom_length_text = input("custom_length [Enter = фактическая длина]: ").strip()
-		custom_length = int(custom_length_text, 0) if custom_length_text else None
+		opcode = _read_opcode(session)
+		fin = _read_bool(session, "FIN", True)
+		mask = _read_bool(session, "Mask", True)
+		custom_length = _read_int(session, "custom_length [Enter = фактическая длина]: ")
 
 		frame = FrameBuilder.build_frame(
 			payload_text.encode("utf-8"),
@@ -39,10 +81,14 @@ def run_manual_mode(connection: WSConnection) -> None:
 			custom_length=custom_length,
 		)
 		connection.send_frame(frame)
-		print(f"[>] Отправлено байт: {len(frame)}")
+		render_frame_result("отправлен", frame, len(frame))
 
-		response = connection.receive()
+		try:
+			response = connection.receive()
+		except TimeoutError:
+			console.print("[yellow]Ответ не получен до истечения таймаута.[/yellow]")
+			continue
 		if not response:
-			print("[!] Сервер закрыл соединение")
+			console.print("[yellow]Сервер закрыл соединение.[/yellow]")
 			return
-		print(f"[<] Получено байт: {len(response)}: {response.hex(' ')}")
+		render_frame_result("получен", response, len(response))

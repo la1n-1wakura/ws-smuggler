@@ -68,3 +68,28 @@ def test_build_frame_supports_custom_length_for_fuzzing():
     assert header[0] == 0x82
     assert header[1] == 10
     assert frame[2:] == b"abc"
+
+
+def test_manual_input_defaults_and_opcode(monkeypatch):
+    from modules import manual
+
+    class FakeSession:
+        def __init__(self, values):
+            self.values = iter(values)
+
+        def prompt(self, *args, **kwargs):
+            return next(self.values)
+
+    session = FakeSession(["", "10"])
+    assert manual._read_bool(session, "FIN", True) is True
+    assert manual._read_opcode(session) == manual.FrameBuilder.OPCODE_PONG
+
+
+def test_manual_empty_custom_length_means_actual_length():
+    from modules import manual
+
+    class FakeSession:
+        def prompt(self, *args, **kwargs):
+            return ""
+
+    assert manual._read_int(FakeSession(), "length") is None
