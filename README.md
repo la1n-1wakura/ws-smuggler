@@ -27,32 +27,72 @@ utility/
 ├── README.md
 ├── requirements.txt
 ├── .gitignore
+├── .vscode/
+│   └── settings.json
 ├── src/
-│   ├── main.py
 │   ├── __init__.py
-│   └── core/
+│   ├── main.py
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── connection.py
+│   │   ├── frame_builder.py
+│   │   ├── frame_parser.py
+│   │   └── traffic_logger.py
+│   ├── modules/
+│   │   ├── __init__.py
+│   │   ├── automated.py
+│   │   └── manual.py
+│   └── ui/
 │       ├── __init__.py
-│       ├── connection.py
-│       ├── frame_builder.py
-│       └── traffic_logger.py
+│       ├── logger.py
+│       ├── reporter.py
+│       ├── shell.py
+│       └── views.py
 ├── tests/
 │   └── test_frames.py
 ├── config/
 │   └── default_payloads.json
 ├── dumps/
+│   ├── test.hex
 │   └── test.pcap
 ├── reports/
 │   └── test.json
 ├── WebStand/
 │   ├── docker-compose.yml
 │   ├── cert-generator/
-│   ├── certs/
-│   ├── logs/
+│   │   ├── Dockerfile
+│   │   └── generate.sh
 │   ├── haproxy-spring/
+│   │   ├── Dockerfile
+│   │   ├── haproxy.cfg
+│   │   ├── pom.xml
+│   │   └── src/main/java/com/example/
 │   ├── nginx-nodejs/
-│   └── nginx-python/
-└── venv/
+│   │   ├── Dockerfile
+│   │   ├── app.js
+│   │   ├── nginx.conf
+│   │   └── package.json
+│   ├── nginx-python/
+│   │   ├── Dockerfile
+│   │   ├── app.py
+│   │   ├── nginx.conf
+│   │   └── requirements.txt
+│   └── test.txt
+└── venv/                 # локально, не входит в Git
 ```
+
+### Архитектурные слои
+
+- `src/main.py` — CLI-точка входа и создание интерактивной консоли;
+- `src/ui/shell.py` — команды `set`, `connect`, `use`, `run`, `report` и `exit`;
+- `src/core/connection.py` — TCP/TLS, HTTP Upgrade и отправка/получение данных;
+- `src/core/frame_builder.py` — ручная сборка WebSocket-фреймов;
+- `src/core/frame_parser.py` — разбор входящих фреймов и сборка фрагментов;
+- `src/modules/manual.py` — ручной режим отправки;
+- `src/modules/automated.py` — сценарии Length Desync и Nested Frame Smuggling;
+- `src/ui/reporter.py` — экспорт JSON/HTML отчётов;
+- `src/core/traffic_logger.py` — raw TX/RX, hex-дампы и PCAP;
+- `WebStand/` — изолированный Docker-стенд с прокси и backend-сервисами.
 
 ---
 ## Технологический Стек
@@ -99,7 +139,7 @@ utility/
 ### 1. Клонирование репозитория и подготовка
 ```bash
 git clone https://github.com/la1n-1wakura/utility.git
-cd ws-smuggler
+cd utility
 ```
 
 ### 2. Подготовка окружения
@@ -118,7 +158,7 @@ python3 -m pytest -q tests/test_frames.py
 
 ### 4. Запуск CLI утилиты
 
-После запуска утилита показывает TUI-меню выбора режима:
+После запуска утилита открывает интерактивную TUI-консоль:
 
 - **Ручной режим** — интерактивная сборка и отправка кадров;
 - **Автоматический режим** — запланированные сценарии fuzzing;
@@ -159,6 +199,108 @@ ws-smuggler > exit
 `disconnect` и `exit`. Параметры TLS задаются так: `set ssl on`, затем
 `set insecure on` для локального самоподписанного сертификата или
 `set ca_file /path/to/ca.crt` для проверки через собственный CA.
+
+Команда `set` проверяет содержимое параметров: `host` принимает доменное имя,
+`localhost` или IP-адрес, `port` должен быть в диапазоне `1-65535`, `path`
+начинается с `/`, `timeout` должен быть положительным числом, а `ca_file`
+должен указывать на существующий файл. При ошибке значение не изменяется.
+Если изменить параметры во время активной сессии, например `set port 8081`,
+соединение будет автоматически пересоздано при следующем `connect` или `run`;
+ручной `disconnect` для этого не требуется.
+
+Автоматический режим запускается после подключения:
+
+```text
+ws-smuggler > use automated
+ws-smuggler > connect
+ws-smuggler > run
+```
+
+Сценарии загружаются из `config/default_payloads.json`. Каждый тест может
+задавать `name`, `payload`, `opcode`, `fin`, `mask` и `custom_length`. Для
+length desync используется `scenario: "length_desync"`, поле
+`declared_length` и необязательный `padding_hex`: так можно проверить как
+завышенную, так и заниженную длину. Для nested frame injection используется
+`scenario: "nested_frame"`; внутренний кадр задаётся через `inner_payload`.
+Для hex-payload используется дополнительное поле `payload_encoding: "hex"`.
+Результат каждого сценария отображается в таблице со статусом, количеством
+отправленных и полученных байт.
+
+Для проверки `ping` используй `opcode 9`, оставь `FIN` и `Mask` включёнными, а
+`custom_length` пустым. После malformed-теста с неверной длиной сервер может
+закрыть WebSocket по протоколу; следующий `run` автоматически переподключится.
+
+По умолчанию автоматический запуск показывает краткую сводку. Для подробного
+вывода используй:
+
+```text
+ws-smuggler > run verbose
+```
+
+Этот режим дополнительно показывает hex отправленного кадра, `opcode`, `FIN`,
+маскирование и payload ответа. Последние результаты можно повторно открыть
+командой `show last` без повторной отправки кадров.
+
+Экспорт отчётов выполняется командами:
+
+```text
+ws-smuggler > report json
+ws-smuggler > report html
+ws-smuggler > report all
+```
+
+Файлы сохраняются в `reports/`. JSON содержит метаданные, параметры
+подключения, список тестов, сводку и найденные аномалии. HTML-версия содержит
+адаптивную таблицу, карточки сводки и фильтрацию результатов.
+
+Каталоги можно изменить в консоли:
+
+```text
+ws-smuggler > set reports_dir artifacts/reports
+ws-smuggler > set dumps_dir artifacts/dumps
+ws-smuggler > set logging on
+```
+
+Каталоги создаются автоматически, а существующие отчёты и сессии логирования
+не перезаписываются: к имени добавляется суффикс `-2`, `-3` и так далее.
+
+Каждый сценарий запускается в отдельной WebSocket-сессии: если некорректный
+кадр приводит к закрытию соединения, следующий тест выполняется после нового
+handshake и не наследует состояние предыдущего сценария.
+
+Ответы WebSocket разбираются frame parser: утилита определяет `FIN`, `opcode`,
+маскирование и расширенную длину, а также собирает frame из нескольких частей
+сетевого чтения.
+
+### Запись сырого трафика
+
+Для включения логирования в интерактивной консоли:
+
+```text
+ws-smuggler > set logging on
+ws-smuggler > connect
+```
+
+Или при запуске CLI:
+
+```bash
+python3 src/main.py --host localhost --port 8080 --log-traffic
+```
+
+Для каждой сессии в `dumps/` создаются:
+
+- `*.tx.bin` — точные отправленные байты;
+- `*.rx.bin` — точные полученные байты;
+- `*.hex` — читаемый hex-дамп с направлением и timestamp;
+- `*.pcap` — стандартный PCAP с raw-записями сессии.
+
+PCAP использует link type `USER0`, поскольку в нём сохраняются raw application
+chunks, а не искусственно реконструированные Ethernet/IP-заголовки. Открыть
+файл можно так:
+
+```bash
+wireshark dumps/session-<timestamp>.pcap
+```
 
 Параметры подключения:
 

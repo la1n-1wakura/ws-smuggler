@@ -11,7 +11,9 @@ openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
   -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
 
 cat /certs/server.crt /certs/server.key > /certs/server.pem
-chmod 600 /certs/server.key /certs/server.pem
+# HAProxy runs as a non-root user and must read the combined certificate.
+# This certificate volume is local lab-only material, not a production secret.
+chmod 644 /certs/server.key /certs/server.pem
 
 echo "Generated a new WebStand TLS certificate"
 tail -f /dev/null

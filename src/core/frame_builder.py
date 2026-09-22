@@ -40,6 +40,8 @@ class FrameBuilder:
 
         if declared_length < 0:
             raise ValueError("custom_length cannot be negative")
+        if opcode >= 0x8 and (not fin or declared_length > 125):
+            raise ValueError("control frames must be FIN and have declared length <= 125")
 
         first_byte = 0x00
         if fin:
