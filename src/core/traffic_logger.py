@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import struct
+import json
+import uuid
 
 from rich.console import Console
 from rich.table import Table
@@ -46,22 +48,35 @@ def display_hex_dump(data: bytes, direction: str, console: Console | None = None
 class TrafficLogger:
 	"""Пишет каждый send/recv chunk в raw binary, hex и PCAP."""
 
-	def __init__(self, session_name: str | None = None, output_dir: str | Path = DUMPS_DIR, show_hex: bool = True):
+	def __init__(self, session_name: str | None = None, output_dir: str | Path = DUMPS_DIR, show_hex: bool = True, session_id: str | None = None):
 		directory = Path(output_dir)
 		directory.mkdir(parents=True, exist_ok=True)
 		self.output_dir = directory
+		self.session_id = session_id or uuid.uuid4().hex
 		stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
 		self.stem = self._unique_stem(session_name or f"session-{stamp}")
 		self.hex_path = directory / f"{self.stem}.hex"
 		self.tx_path = directory / f"{self.stem}.tx.bin"
 		self.rx_path = directory / f"{self.stem}.rx.bin"
 		self.pcap_path = directory / f"{self.stem}.pcap"
+		self.events_path = directory / f"{self.stem}.events.jsonl"
 		self.show_hex = show_hex
 		self._hex_file = self.hex_path.open("a", encoding="utf-8")
 		self._tx_file = self.tx_path.open("ab")
 		self._rx_file = self.rx_path.open("ab")
 		self._pcap_file = self.pcap_path.open("wb")
+		self._events_file = self.events_path.open("a", encoding="utf-8")
 		self._write_pcap_header()
+
+	@property
+	def paths(self) -> dict[str, str]:
+		return {
+			"hex": str(self.hex_path),
+			"tx_bin": str(self.tx_path),
+			"rx_bin": str(self.rx_path),
+			"pcap": str(self.pcap_path),
+			"events": str(self.events_path),
+		}
 
 	def _write_pcap_header(self) -> None:
 		self._pcap_file.write(struct.pack("<IHHIIII", PCAP_MAGIC, 2, 4, 0, 0, 65535, PCAP_LINKTYPE_USER0))
@@ -83,6 +98,14 @@ class TrafficLogger:
 		if not data:
 			return
 		timestamp = datetime.now(timezone.utc)
+		event = {
+			"session_id": self.session_id,
+			"timestamp": timestamp.isoformat(),
+			"direction": direction.upper(),
+			"size": len(data),
+		}
+		self._events_file.write(json.dumps(event, ensure_ascii=False) + "\n")
+		self._events_file.flush()
 		self._hex_file.write(f"[{timestamp.isoformat()}] {direction.upper()} {len(data)} bytes\n")
 		self._hex_file.write(format_hex_dump(data) + "\n")
 		self._hex_file.flush()
@@ -96,5 +119,5 @@ class TrafficLogger:
 			display_hex_dump(data, direction)
 
 	def close(self) -> None:
-		for file in (self._hex_file, self._tx_file, self._rx_file, self._pcap_file):
+		for file in (self._hex_file, self._tx_file, self._rx_file, self._pcap_file, self._events_file):
 			file.close()

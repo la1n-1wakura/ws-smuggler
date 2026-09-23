@@ -1,9 +1,8 @@
 import asyncio
 import websockets
 
-# Обработчик WebSocket-соединений
-# path - обязательный параметр для совместимости со старыми версиями библиотеки
-async def echo(websocket, path):
+# Обработчик WebSocket-соединений. path передаётся старыми версиями websockets.
+async def echo(websocket, path=None):
     """
     Эхо-сервер: получает сообщение и отправляет его обратно с префиксом "Эхо: "
     """
