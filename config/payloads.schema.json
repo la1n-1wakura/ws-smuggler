@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ws-smuggler.local/schemas/payloads.schema.json",
+  "title": "WS-Smuggler automated payloads configuration",
+  "description": "Формальная схема для config/default_payloads.json. Позволяет добавлять новые сценарии автоматического режима без изменения Python-кода.",
+  "type": "object",
+  "required": ["cases"],
+  "additionalProperties": true,
+  "properties": {
+    "version": { "type": "string" },
+    "targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["target_id", "proxy_id", "backend_id", "port"],
+        "properties": {
+          "target_id": { "type": "string", "minLength": 1 },
+          "proxy_id": { "type": "string", "minLength": 1 },
+          "backend_id": { "type": "string", "minLength": 1 },
+          "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        },
+        "additionalProperties": true
+      }
+    },
+    "groups": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string", "minLength": 1 }
+      }
+    },
+    "categories": {
+      "description": "Опциональный явный список известных категорий сценариев.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "cases": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/case" }
+    }
+  },
+  "$defs": {
+    "expected_status_value": {
+      "type": "string",
+      "enum": ["response", "closed", "timeout", "protocol_error", "error"]
+    },
+    "case": {
+      "type": "object",
+      "required": ["experiment_id", "name", "category", "expected_status", "expected_response"],
+      "properties": {
+        "experiment_id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "category": { "type": "string", "minLength": 1 },
+        "destructive": { "type": "boolean" },
+        "scenario": {
+          "type": "string",
+          "enum": ["standard", "length_desync", "extra_padding", "nested_frame"]
+        },
+        "payload": { "type": "string" },
+        "payload_encoding": { "type": "string", "enum": ["hex"] },
+        "opcode": { "type": "integer", "minimum": 0, "maximum": 15 },
+        "fin": { "type": "boolean" },
+        "mask": { "type": "boolean" },
+        "rsv1": { "type": "boolean" },
+        "custom_length": { "type": "integer", "minimum": 0 },
+        "declared_length": { "type": "integer", "minimum": 0 },
+        "padding_hex": { "type": "string" },
+        "inner_payload": { "type": "string" },
+        "inner_opcode": { "type": "integer", "minimum": 0, "maximum": 15 },
+        "expected_status": {
+          "oneOf": [
+            { "$ref": "#/$defs/expected_status_value" },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/expected_status_value" }
+            }
+          ]
+        },
+        "expected_response": { "type": "object" },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["target_id", "proxy_id", "backend_id", "port"]
+          }
+        }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "scenario": { "const": "length_desync" } },
+            "required": ["scenario"]
+          },
+          "then": { "required": ["payload", "declared_length"] }
+        },
+        {
+          "if": {
+            "properties": { "scenario": { "const": "nested_frame" } },
+            "required": ["scenario"]
+          },
+          "then": { "required": ["inner_payload"] }
+        }
+      ]
+    }
+  }
+}
