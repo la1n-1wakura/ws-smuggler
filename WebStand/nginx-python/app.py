@@ -17,7 +17,7 @@ async def main():
     async with websockets.serve(echo, "0.0.0.0", 5000):
         print("=" * 50)
         print("🚀 WebSocket Echo Server запущен")
-        print(f"📍 Адрес: 0.0.0.0:5000")
+        print("📍 Адрес: 0.0.0.0:5000")
         print("=" * 50)
         print("Ожидание подключений...")
         # Бесконечное ожидание
