@@ -50,3 +50,10 @@ WebStand/certs/*.csr
 dumps/*.pcap
 dumps/*.hex
 dumps/*.bin
+
+dist/
+build/
+*.egg-info/
+
+__pycache__/
+*.py[cod]

@@ -1,0 +1,8 @@
+include README.md
+include LICENSE
+include requirements.txt
+include pytest.ini
+include config/*.json
+include config/*.schema.json
+recursive-include src *.py
+recursive-include tests *.py
