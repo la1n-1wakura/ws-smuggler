@@ -512,3 +512,45 @@ ws-smuggler > compare reports/ws-smuggler-<run-a>.json reports/ws-smuggler-<run-
    - Ruff 0.16.8 для быстрого линтинга и форматирования
    - Конфигурация через `pyproject.toml`
    - GitHub Actions workflow для Continuous Integration
+
+---
+## Установка как пакет
+
+WS-Smuggler можно установить как пакет Python, что позволяет запускать его из любого места без необходимости клонирования репозитория.
+
+### Установка из исходников
+
+```bash
+# Клонирование репозитория
+git clone https://github.com/la1n-1wakura/ws-smuggler.git
+cd ws-smuggler
+
+# Установка пакета
+pip install .
+```
+
+### Установка из PyPI (будущая версия)
+
+```bash
+pip install ws-smuggler
+```
+
+После установки команда `ws-smuggler` будет доступна в PATH:
+
+```bash
+ws-smuggler --help
+ws-smuggler --host localhost --port 8080 --ssl --insecure
+```
+
+### Установка для разработки
+
+```bash
+git clone https://github.com/la1n-1wakura/ws-smuggler.git
+cd ws-smuggler
+pip install -e ".[dev]"
+```
+
+Опция `[dev]` устанавливает дополнительные зависимости для разработки (pytest, ruff).
+
+---
+## Установка и запуск (разработка)
