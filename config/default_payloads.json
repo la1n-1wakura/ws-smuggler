@@ -1,51 +1,25 @@
 {
-    "cases": [
-        {
-            "name": "text_echo",
-            "payload": "hello",
-            "opcode": 1,
-            "fin": true,
-            "mask": true
-        },
-        {
-            "name": "binary_echo",
-            "payload": "010203",
-            "payload_encoding": "hex",
-            "opcode": 2,
-            "fin": true,
-            "mask": true
-        },
-        {
-            "name": "ping",
-            "payload": "ping",
-            "opcode": 9,
-            "fin": true,
-            "mask": true
-        },
-        {
-            "name": "declared_length_mismatch",
-            "scenario": "length_desync",
-            "payload": "abc",
-            "opcode": 1,
-            "fin": true,
-            "mask": true,
-            "declared_length": 10
-        },
-        {
-            "name": "under_declared_length_with_padding",
-            "scenario": "length_desync",
-            "payload": "abc",
-            "padding_hex": "646566",
-            "opcode": 1,
-            "mask": true,
-            "declared_length": 3
-        },
-        {
-            "name": "nested_frame_injection",
-            "scenario": "nested_frame",
-            "payload": "visible:",
-            "inner_payload": "hidden",
-            "inner_opcode": 1
-        }
-    ]
+  "version": "1.0",
+  "targets": [
+    {"target_id": "nginx-python", "proxy_id": "nginx", "backend_id": "python", "port": 8080},
+    {"target_id": "nginx-nodejs", "proxy_id": "nginx", "backend_id": "nodejs", "port": 8081},
+    {"target_id": "haproxy-spring", "proxy_id": "haproxy", "backend_id": "spring", "port": 8082}
+  ],
+  "groups": {
+    "safe": ["text_echo", "binary_echo", "ping_pong"],
+    "desync": ["over_declared_length", "under_declared_length", "extra_padding", "nested_frame_injection"],
+    "protocol_errors": ["invalid_opcode", "invalid_rsv", "fragmented_frame"]
+  },
+  "cases": [
+    {"experiment_id": "text_echo", "name": "text_echo", "category": "baseline", "destructive": false, "payload": "hello", "opcode": 1, "fin": true, "mask": true, "expected_status": "response", "expected_response": {"opcode": 1, "payload": "Эхо: hello"}},
+    {"experiment_id": "binary_echo", "name": "binary_echo", "category": "baseline", "destructive": false, "payload": "010203", "payload_encoding": "hex", "opcode": 2, "fin": true, "mask": true, "expected_status": "response", "expected_response": {"opcode": 2, "payload_hex": "010203"}},
+    {"experiment_id": "ping_pong", "name": "ping_pong", "category": "control", "destructive": false, "payload": "ping", "opcode": 9, "fin": true, "mask": true, "expected_status": "response", "expected_response": {"opcode": 10, "payload": "ping"}},
+    {"experiment_id": "over_declared_length", "name": "over_declared_length", "category": "desync", "destructive": true, "scenario": "length_desync", "payload": "abc", "opcode": 1, "mask": true, "declared_length": 10, "expected_status": ["closed", "timeout", "protocol_error"], "expected_response": {"behavior": "server rejects or waits for missing bytes"}},
+    {"experiment_id": "under_declared_length", "name": "under_declared_length", "category": "desync", "destructive": true, "scenario": "length_desync", "payload": "abc", "padding_hex": "646566", "opcode": 1, "mask": true, "declared_length": 3, "expected_status": ["response", "closed", "protocol_error"], "expected_response": {"behavior": "proxy/backend may split trailing bytes"}},
+    {"experiment_id": "extra_padding", "name": "extra_padding", "category": "desync", "destructive": true, "scenario": "extra_padding", "payload": "abc", "padding_hex": "0001020304", "opcode": 1, "mask": true, "expected_status": "response", "expected_response": {"opcode": 1, "behavior": "payload includes padding"}},
+    {"experiment_id": "nested_frame_injection", "name": "nested_frame_injection", "category": "desync", "destructive": true, "scenario": "nested_frame", "payload": "visible:", "inner_payload": "hidden", "inner_opcode": 1, "expected_status": ["response", "closed", "protocol_error"], "expected_response": {"behavior": "inner frame remains payload data or is rejected"}},
+    {"experiment_id": "invalid_opcode", "name": "invalid_opcode", "category": "protocol_error", "destructive": true, "payload": "invalid", "opcode": 11, "mask": true, "expected_status": ["closed", "protocol_error"], "expected_response": {"close_code": 1002}},
+    {"experiment_id": "invalid_rsv", "name": "invalid_rsv", "category": "protocol_error", "destructive": true, "payload": "invalid", "opcode": 1, "rsv1": true, "mask": true, "expected_status": ["closed", "protocol_error"], "expected_response": {"close_code": 1002}},
+    {"experiment_id": "fragmented_frame", "name": "fragmented_frame", "category": "fragmentation", "destructive": true, "payload": "fragment", "opcode": 1, "fin": false, "mask": true, "expected_status": ["response", "closed", "protocol_error"], "expected_response": {"behavior": "fragment is buffered or rejected"}}
+  ]
 }

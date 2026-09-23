@@ -1,6 +1,9 @@
 # Юнит-тесты для проверки корректности сборщика кадров
 
+import base64
+import json
 import socket
+import struct
 import sys
 from pathlib import Path
 
@@ -32,6 +35,25 @@ class FakeSocket:
         self.closed = True
 
 
+class HandshakeSocket:
+    def __init__(self, response):
+        self.response = response
+        self.closed = False
+
+    def settimeout(self, timeout):
+        pass
+
+    def sendall(self, data):
+        pass
+
+    def recv(self, size):
+        response, self.response = self.response, b""
+        return response
+
+    def close(self):
+        self.closed = True
+
+
 def test_connect_closes_socket_on_error(monkeypatch):
     fake_socket = FakeSocket()
 
@@ -45,6 +67,40 @@ def test_connect_closes_socket_on_error(monkeypatch):
     with pytest.raises(RuntimeError, match="boom during read"):
         connection.connect()
 
+    assert fake_socket.closed is True
+    assert connection.sock is None
+
+
+def test_connect_preserves_frame_bytes_received_with_handshake(monkeypatch):
+    from core.frame_builder import FrameBuilder
+
+    websocket_key = "dGhlIHNhbXBsZSBub25jZQ=="
+    accept = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+    handshake = (
+        b"HTTP/1.1 101 Switching Protocols\r\n"
+        b"Upgrade: websocket\r\n"
+        b"Connection: Upgrade\r\n"
+        b"Sec-WebSocket-Accept: " + accept.encode("ascii") + b"\r\n\r\n"
+    )
+    frame = FrameBuilder.build_frame(b"hello", mask=False)
+    fake_socket = HandshakeSocket(handshake + frame)
+    monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: fake_socket)
+    monkeypatch.setattr("secrets.token_bytes", lambda size: base64.b64decode(websocket_key))
+
+    connection = WSConnection("localhost", 80, timeout=1.0)
+    connection.connect()
+
+    assert connection.receive_frame().payload == b"hello"
+
+
+def test_connect_closes_socket_when_upgrade_is_rejected(monkeypatch):
+    fake_socket = HandshakeSocket(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+    monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: fake_socket)
+
+    connection = WSConnection("localhost", 80, timeout=1.0)
+    response = connection.connect()
+
+    assert "400 Bad Request" in response
     assert fake_socket.closed is True
     assert connection.sock is None
 
@@ -99,7 +155,7 @@ def test_automated_mode_loads_cases_and_sends_frames(tmp_path):
     from modules.automated import load_cases, run_automated_mode
 
     config = tmp_path / "cases.json"
-    config.write_text('{"cases": [{"name": "hello", "payload": "hello", "opcode": 1}]}', encoding="utf-8")
+    config.write_text('{"cases": [{"experiment_id": "hello", "name": "hello", "category": "baseline", "destructive": false, "payload": "hello", "opcode": 1, "expected_status": "response", "expected_response": {}}]}', encoding="utf-8")
 
     class FakeConnection:
         def __init__(self):
@@ -117,6 +173,65 @@ def test_automated_mode_loads_cases_and_sends_frames(tmp_path):
     assert results[0]["status"] == "response"
     assert connection.sent[0][0] == 0x81
     assert results[0]["sent_hex"].startswith("81 85")
+    assert results[0]["started_at"] < results[0]["ended_at"]
+    assert results[0]["duration_ms"] >= 0
+    assert results[0]["response_wait_duration_ms"] >= 0
+
+
+def test_automated_config_supports_groups_categories_limits_and_safe_mode(tmp_path):
+    from modules.automated import load_cases, run_automated_mode
+
+    config = tmp_path / "cases.json"
+    config.write_text(
+        '{"groups": {"smoke": ["safe"]}, "cases": ['
+        '{"experiment_id":"safe","name":"safe","category":"baseline","destructive":false,"payload":"ok","expected_status":"response","expected_response":{}},'
+        '{"experiment_id":"danger","name":"danger","category":"desync","destructive":true,"scenario":"length_desync","payload":"x","declared_length":2,"expected_status":"closed","expected_response":{}}'
+        ']}',
+        encoding="utf-8",
+    )
+
+    assert load_cases(config)[0]["category"] == "baseline"
+
+    class FakeConnection:
+        def send_frame(self, frame):
+            pass
+
+        def receive(self):
+            return b"ok"
+
+    assert len(run_automated_mode(FakeConnection(), config, group="smoke")) == 1
+    assert len(run_automated_mode(FakeConnection(), config, safe_mode=True)) == 1
+    assert len(run_automated_mode(FakeConnection(), config, max_tests=1)) == 1
+
+
+def test_invalid_automated_config_is_rejected():
+    from modules.automated import validate_config
+
+    with pytest.raises(ValueError, match="case missing category"):
+        validate_config({"cases": [{"experiment_id": "broken", "name": "broken"}]})
+
+
+def test_matrix_cases_have_ids_targets_and_can_be_replayed():
+    from modules.automated import load_case_by_id, load_cases, run_automated_mode
+
+    cases = load_cases()
+    ids = {case["experiment_id"] for case in cases}
+    assert {"text_echo", "binary_echo", "ping_pong", "over_declared_length", "under_declared_length", "extra_padding", "nested_frame_injection", "invalid_opcode", "invalid_rsv", "fragmented_frame"} <= ids
+    assert {target["target_id"] for target in cases[0]["targets"]} == {"nginx-python", "nginx-nodejs", "haproxy-spring"}
+    assert load_case_by_id("invalid_rsv")["rsv1"] is True
+
+    class FakeConnection:
+        def send_frame(self, frame):
+            self.sent = frame
+
+        def receive(self):
+            return b"response"
+
+    result = run_automated_mode(FakeConnection(), experiment_id="text_echo", target_id="haproxy-spring")
+    assert result[0]["experiment_id"] == "text_echo"
+    assert result[0]["proxy_id"] == "haproxy"
+    assert result[0]["backend_id"] == "spring"
+    assert result[0]["matches_expected"] is True
 
 
 def test_length_desync_supports_under_declaration_with_extra_bytes():
@@ -205,16 +320,46 @@ def test_reporter_exports_json_and_html(tmp_path):
         {"name": "ok", "status": "response", "sent": 5, "received": 7},
         {"name": "bad", "status": "timeout", "sent": 8, "received": 0, "error": "read timeout"},
     ]
-    report = build_report(results, connection={"host": "localhost", "port": 8080})
+    report = build_report(results, connection={"host": "localhost", "port": 8080, "dump_paths": {"pcap": "session.pcap"}})
 
-    assert report["summary"] == {"total_tests": 2, "responses": 1, "anomalies": 1}
+    assert report["summary"]["total_tests"] == 2
+    assert report["summary"]["status_counts"] == {"response": 1, "timeout": 1}
+    assert report["summary"]["sent_bytes"] == 13
+    assert report["summary"]["received_bytes"] == 7
+    assert report["summary"]["timeouts"] == 1
+    assert report["summary"]["successful_responses"] == 1
+    assert report["summary"]["anomaly_percentage"] == 50.0
+    assert report["connection"]["dump_paths"]["pcap"] == "session.pcap"
     json_path = export_json(report, output_dir=tmp_path)
-    html_path = export_html(report, output_dir=tmp_path)
+    html_path = export_html(report, stem=json_path.stem, output_dir=tmp_path, json_path=json_path)
     assert '"anomalies"' in json_path.read_text(encoding="utf-8")
     html = html_path.read_text(encoding="utf-8")
     assert "viewport" in html
     assert "filter" in html
     assert "read timeout" in html
+    assert f'href="{json_path.name}"' in html
+
+
+def test_report_archive_has_unique_run_ids_and_compare_detects_changes(tmp_path):
+    from ui.reporter import build_report, compare_reports, export_json
+
+    first = build_report(
+        [{"name": "case", "experiment_id": "case", "target_id": "nginx-python", "status": "timeout", "sent": 10, "received": 0}],
+        metadata={"configuration": {"host": "localhost", "port": 8080, "mode": "automated"}},
+    )
+    second = build_report(
+        [{"name": "case", "experiment_id": "case", "target_id": "nginx-python", "status": "closed", "sent": 10, "received": 5}],
+        metadata={"configuration": {"host": "localhost", "port": 8080, "mode": "automated"}},
+    )
+    first_path = export_json(first, output_dir=tmp_path)
+    second_path = export_json(second, output_dir=tmp_path)
+    assert first["run_id"] != second["run_id"]
+    assert first_path != second_path
+    assert "localhost-8080-automated" in first_path.name
+
+    comparison = compare_reports(first, second)
+    assert len(comparison["changed_anomalies"]) == 1
+    assert comparison["metric_changes"]["timeouts"] == {"before": 1, "after": 0}
 
 
 def test_shell_validates_connection_options(tmp_path):
@@ -246,6 +391,7 @@ def test_traffic_logger_preserves_raw_bytes_and_writes_pcap(tmp_path):
     assert hex_dump.startswith("00000000  41 42 43")
     assert hex_dump.endswith("|ABC|")
     logger = TrafficLogger(session_name="test-session", output_dir=tmp_path, show_hex=False)
+    assert logger.session_id
     logger.log("tx", bytes([0, 65, 66, 67]))
     logger.log("rx", b"reply")
     logger.close()
@@ -255,6 +401,19 @@ def test_traffic_logger_preserves_raw_bytes_and_writes_pcap(tmp_path):
     pcap = (tmp_path / "test-session.pcap").read_bytes()
     assert len(pcap) > 24
     assert pcap[:4] == bytes([0xD4, 0xC3, 0xB2, 0xA1])
+    records = []
+    offset = 24
+    while offset < len(pcap):
+        header = struct.unpack_from("<IIII", pcap, offset)
+        offset += 16
+        seconds, microseconds, included, original = header
+        records.append((seconds, microseconds, included, original, pcap[offset:offset + included]))
+        offset += included
+    assert [record[2:] for record in records] == [(4, 4, b"\x00ABC"), (5, 5, b"reply")]
+    events = [json.loads(line) for line in (tmp_path / "test-session.events.jsonl").read_text().splitlines()]
+    assert [event["direction"] for event in events] == ["TX", "RX"]
+    assert all(event["session_id"] == logger.session_id for event in events)
+    assert all(event["timestamp"] for event in events)
 
 
 def test_reports_and_logs_do_not_overwrite_existing_files(tmp_path):
@@ -281,3 +440,84 @@ def test_control_frame_rejects_fragmentation_and_oversized_length():
         FrameBuilder.build_frame(b"ping", opcode=FrameBuilder.OPCODE_PING, fin=False)
     with pytest.raises(ValueError, match="control frames"):
         FrameBuilder.build_frame(b"x" * 126, opcode=FrameBuilder.OPCODE_PING)
+
+
+@pytest.mark.parametrize(
+    ("raw_frame", "message"),
+    [
+        (b"\x8b\x00", "invalid opcode"),
+        (b"\xc1\x00", "RSV flags"),
+        (b"\x09\x00", "FIN"),
+        (b"\x89\x7e\x00\x7e" + b"x" * 126, "exceeds 125"),
+        (b"\x88\x01\x00", "2-byte code"),
+        (b"\x88\x02\x03\xed", "invalid close code"),
+        (b"\x88\x03\x03\xe8\xff", "UTF-8"),
+    ],
+)
+def test_parser_rejects_invalid_protocol_frames(raw_frame, message):
+    from core.frame_parser import FrameProtocolError, parse_frame
+
+    with pytest.raises(FrameProtocolError, match=message):
+        parse_frame(raw_frame)
+
+
+def test_parser_exposes_close_code_and_reason():
+    from core.frame_builder import FrameBuilder
+    from core.frame_parser import parse_frame
+
+    raw_frame = FrameBuilder.build_frame(
+        (1002).to_bytes(2, "big") + "protocol error".encode("utf-8"),
+        opcode=FrameBuilder.OPCODE_CLOSE,
+        mask=False,
+    )
+    frame, _ = parse_frame(raw_frame)
+
+    assert frame.close_code == 1002
+    assert frame.close_reason == "protocol error"
+
+
+def test_parser_marks_ping_and_pong_as_control_frames():
+    from core.frame_builder import FrameBuilder
+    from core.frame_parser import parse_frame
+
+    ping, _ = parse_frame(FrameBuilder.build_frame(b"ping", opcode=FrameBuilder.OPCODE_PING, mask=False))
+    pong, _ = parse_frame(FrameBuilder.build_frame(b"pong", opcode=FrameBuilder.OPCODE_PONG, mask=False))
+
+    assert ping.is_control and not ping.is_data
+    assert pong.is_control and not pong.is_data
+
+
+def test_connection_rejects_continuation_without_fragmented_message():
+    from core.connection import WSConnection
+    from core.frame_builder import FrameBuilder
+    from core.frame_parser import FrameProtocolError
+
+    class Socket:
+        def recv(self, size):
+            return FrameBuilder.build_frame(b"part", opcode=0, mask=False)
+
+    connection = WSConnection("localhost", 80)
+    connection.sock = Socket()
+
+    with pytest.raises(FrameProtocolError, match="continuation"):
+        connection.receive_frame()
+
+
+def test_connection_accepts_fragmented_message_sequence():
+    from core.connection import WSConnection
+    from core.frame_builder import FrameBuilder
+
+    frames = iter([
+        FrameBuilder.build_frame(b"part", opcode=1, fin=False, mask=False),
+        FrameBuilder.build_frame(b"end", opcode=0, fin=True, mask=False),
+    ])
+
+    class Socket:
+        def recv(self, size):
+            return next(frames)
+
+    connection = WSConnection("localhost", 80)
+    connection.sock = Socket()
+
+    assert connection.receive_frame().fin is False
+    assert connection.receive_frame().opcode == 0

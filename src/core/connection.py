@@ -5,8 +5,9 @@ import ssl
 import base64
 import hashlib
 import secrets
+import time
 
-from core.frame_parser import IncompleteFrameError, WebSocketFrame, parse_frame
+from core.frame_parser import FrameProtocolError, IncompleteFrameError, WebSocketFrame, parse_frame
 from core.traffic_logger import TrafficLogger
 
 class WSConnection:
@@ -23,7 +24,11 @@ class WSConnection:
         self.ca_file = ca_file
         self.sock = None    # Здесь будет храниться наш открытый сокет
         self._receive_buffer = bytearray()
+        self._fragmented_opcode: int | None = None
         self.traffic_logger = traffic_logger
+        self.session_id = traffic_logger.session_id if traffic_logger else None
+        self.traffic_dump_paths = traffic_logger.paths if traffic_logger else {}
+        self.last_handshake_duration_ms: float | None = None
 
     def _send_raw(self, data: bytes) -> None:
         self.sock.sendall(data)
@@ -46,6 +51,8 @@ class WSConnection:
 
     def connect(self) -> str:
         """Открывает сокет и выполняет HTTP Upgrade Handshake"""
+        handshake_started = time.monotonic()
+        self.last_handshake_duration_ms = None
         if self.sock is not None:
             self.close()
 
@@ -71,6 +78,7 @@ class WSConnection:
 
             self.sock.settimeout(self.timeout)
             self._receive_buffer.clear()
+            self._fragmented_opcode = None
 
             websocket_key = self._build_websocket_key()
             expected_accept = self._expected_accept(websocket_key)
@@ -99,7 +107,9 @@ class WSConnection:
                 if len(buffer) > 65536:
                     raise TimeoutError("HTTP response header exceeded maximum size")
 
-            response = buffer.decode('utf-8', errors='ignore')
+            header_end = buffer.find(b"\r\n\r\n")
+            response_bytes = buffer if header_end == -1 else buffer[:header_end + 4]
+            response = response_bytes.decode('utf-8', errors='ignore')
             header_lines = response.split("\r\n")
             accept_value = None
             for line in header_lines:
@@ -107,7 +117,9 @@ class WSConnection:
                     accept_value = line.split(":", 1)[1].strip()
                     break
 
-            if "101 Switching Protocols" not in response:
+            status_parts = header_lines[0].split(" ", 2) if header_lines else []
+            if len(status_parts) < 2 or status_parts[0] != "HTTP/1.1" or status_parts[1] != "101":
+                self.close()
                 return response
 
             if accept_value is None:
@@ -117,6 +129,9 @@ class WSConnection:
                 raise ValueError(
                     f"Invalid Sec-WebSocket-Accept header: expected {expected_accept}, got {accept_value}"
                 )
+
+            if header_end != -1:
+                self._receive_buffer.extend(buffer[header_end + 4:])
 
             # Возвращаем текст ответа для проверки
             return response
@@ -136,14 +151,17 @@ class WSConnection:
                 self.traffic_logger.close()
                 self.traffic_logger = None
             raise
+        finally:
+            self.last_handshake_duration_ms = round((time.monotonic() - handshake_started) * 1000, 3)
 
-    def close(self):
+    def close(self, close_logger: bool = True):
         """Закрываем сокет, когда закончили работу"""
         if self.sock:
             self.sock.close()
             self.sock = None
             self._receive_buffer.clear()
-        if self.traffic_logger:
+            self._fragmented_opcode = None
+        if close_logger and self.traffic_logger:
             self.traffic_logger.close()
             self.traffic_logger = None
 
@@ -174,5 +192,20 @@ class WSConnection:
                 self._receive_buffer.extend(chunk)
                 continue
 
+            self._validate_fragmentation(frame)
             del self._receive_buffer[:end]
             return frame
+
+    def _validate_fragmentation(self, frame: WebSocketFrame) -> None:
+        if frame.opcode in {0x8, 0x9, 0xA}:
+            return
+        if frame.opcode == 0x0:
+            if self._fragmented_opcode is None:
+                raise FrameProtocolError("continuation frame without an open fragmented message")
+            if frame.fin:
+                self._fragmented_opcode = None
+            return
+        if self._fragmented_opcode is not None:
+            raise FrameProtocolError("data frame started before fragmented message ended")
+        if not frame.fin:
+            self._fragmented_opcode = frame.opcode

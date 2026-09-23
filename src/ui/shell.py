@@ -12,9 +12,9 @@ from rich.table import Table
 
 from core.connection import WSConnection
 from core.traffic_logger import TrafficLogger
-from modules.automated import run_automated_mode
+from modules.automated import load_cases, run_automated_mode
 from modules.manual import run_manual_mode
-from ui.reporter import export_html, export_json, build_report
+from ui.reporter import compare_reports, export_html, export_json, build_report, load_report, report_stem
 from ui.views import console, show_not_implemented
 
 
@@ -42,6 +42,10 @@ class WSSmugglerShell:
             "insecure": insecure,
             "ca_file": ca_file,
             "mode": initial_mode,
+            "target_id": None,
+            "payloads_file": "config/default_payloads.json",
+            "max_tests": None,
+            "safe_mode": False,
             "logging": log_traffic,
             "reports_dir": "reports",
             "dumps_dir": "dumps",
@@ -63,7 +67,8 @@ class WSSmugglerShell:
             "start": {"verbose": None},
             "exit": None,
             "quit": None,
-            "show": {"options": None},
+            "show": {"options": None, "logging": None, "last": None, "reports": None},
+            "compare": None,
             "report": {"json": None, "html": None, "all": None},
             "use": {"manual": None, "automated": None, "traffic": None},
             "mode": {"manual": None, "automated": None, "traffic": None},
@@ -76,6 +81,10 @@ class WSSmugglerShell:
                 "insecure": {"on": None, "off": None},
                 "ca_file": None,
                 "mode": {"manual": None, "automated": None, "traffic": None},
+                "target_id": None,
+                "payloads_file": None,
+                "max_tests": None,
+                "safe_mode": {"on": None, "off": None},
                 "logging": {"on": None, "off": None},
                 "reports_dir": None,
                 "dumps_dir": None,
@@ -115,6 +124,10 @@ class WSSmugglerShell:
         elif command in {"show", "options"}:
             if argument == "last":
                 self.show_last_results()
+            elif argument in {"logging", "logs", "dump", "dumps"}:
+                self.show_logging_paths()
+            elif argument == "reports":
+                self.show_reports()
             else:
                 self.show_options()
         elif command == "set":
@@ -125,8 +138,16 @@ class WSSmugglerShell:
             self.disconnect()
         elif command == "report":
             self.export_results(argument or "all")
+        elif command == "compare":
+            self.compare_report_files(parts[1:])
         elif command in {"run", "start"}:
-            self.execute_mode(verbose=argument == "verbose")
+            run_value = parts[2] if len(parts) > 2 else ""
+            self.execute_mode(
+                verbose=argument == "verbose",
+                experiment_id=None if argument in {"", "verbose", "group", "category"} else argument,
+                group=run_value if argument == "group" else None,
+                category=run_value if argument == "category" else None,
+            )
         elif command in {"mode", "use"}:
             if argument in {"manual", "automated", "traffic"}:
                 self.options["mode"] = argument
@@ -146,6 +167,9 @@ class WSSmugglerShell:
         table.add_column("Команда", style="bold cyan")
         table.add_column("Описание")
         table.add_row("show options", "Показать текущие параметры")
+        table.add_row("show logging", "Показать session ID и пути dump-файлов")
+        table.add_row("show reports", "Показать архив JSON/HTML-отчётов")
+        table.add_row("compare <report-a> <report-b>", "Сравнить два JSON-отчёта")
         table.add_row("set <опция> <значение>", "Изменить параметр")
         table.add_row("use <режим>", "Выбрать manual, automated или traffic")
         table.add_row("connect", "Установить TCP/TLS и выполнить handshake")
@@ -167,6 +191,65 @@ class WSSmugglerShell:
         table.add_row("status", "connected" if self.connection else "disconnected")
         console.print(table)
 
+    def show_logging_paths(self) -> None:
+        """Показать текущую session ID и созданные dump-файлы."""
+        if self.connection is None or not self.connection.traffic_dump_paths:
+            console.print("[yellow]Активная сессия логирования отсутствует.[/yellow]")
+            return
+        table = Table(title="Traffic logging", border_style="cyan")
+        table.add_column("Field", style="bold cyan")
+        table.add_column("Value", overflow="fold")
+        table.add_row("session_id", str(self.connection.session_id))
+        for name, path in self.connection.traffic_dump_paths.items():
+            table.add_row(name, path)
+        console.print(table)
+
+    def show_reports(self) -> None:
+        report_dir = Path(self.options["reports_dir"]).expanduser()
+        paths = sorted(report_dir.glob("*.json")) if report_dir.is_dir() else []
+        if not paths:
+            console.print("[yellow]JSON-отчёты не найдены.[/yellow]")
+            return
+        table = Table(title="Report archive", border_style="cyan")
+        table.add_column("Run ID", style="bold cyan")
+        table.add_column("Generated")
+        table.add_column("Path", overflow="fold")
+        for path in paths:
+            try:
+                report = load_report(path)
+                table.add_row(str(report.get("run_id", "unknown")), str(report.get("generated_at", "")), str(path))
+            except (OSError, ValueError) as error:
+                table.add_row("invalid", "", f"{path}: {error}")
+        console.print(table)
+
+    def compare_report_files(self, arguments: list[str]) -> None:
+        if len(arguments) != 2:
+            console.print("[yellow]Использование: compare <report-a.json> <report-b.json>[/yellow]")
+            return
+        try:
+            comparison = compare_reports(load_report(arguments[0]), load_report(arguments[1]))
+        except (OSError, ValueError, TypeError) as error:
+            console.print(f"[red]Не удалось сравнить отчёты: {error}[/red]")
+            return
+        table = Table(title="Report comparison", border_style="cyan")
+        table.add_column("Change", style="bold cyan")
+        table.add_column("Count", justify="right")
+        table.add_row("new anomalies", str(len(comparison["new_anomalies"])))
+        table.add_row("removed anomalies", str(len(comparison["removed_anomalies"])))
+        table.add_row("changed anomalies", str(len(comparison["changed_anomalies"])))
+        table.add_row("changed metrics", str(len(comparison["metric_changes"])))
+        console.print(table)
+        for category in ("new_anomalies", "removed_anomalies"):
+            for anomaly in comparison[category]:
+                console.print(f"[yellow]{category}: {anomaly.get('test', 'unknown')} -> {anomaly.get('status', 'unknown')}[/yellow]")
+        for anomaly in comparison["changed_anomalies"]:
+            console.print(
+                f"[yellow]changed: {anomaly['key']} "
+                f"{anomaly['before'].get('status')} -> {anomaly['after'].get('status')}[/yellow]"
+            )
+        for key, values in comparison["metric_changes"].items():
+            console.print(f"[dim]{key}: {values['before']} -> {values['after']}[/dim]")
+
     def set_option(self, arguments: list[str]) -> None:
         if len(arguments) != 2:
             console.print("[yellow]Использование: set <опция> <значение>[/yellow]")
@@ -183,6 +266,22 @@ class WSSmugglerShell:
                 if value not in {"manual", "automated", "traffic"}:
                     raise ValueError("ожидалось manual, automated или traffic")
                 parsed = value
+            elif name == "target_id":
+                if not value:
+                    raise ValueError("target_id не должен быть пустым")
+                parsed = value
+            elif name == "payloads_file":
+                parsed = str(Path(value).expanduser())
+                if not Path(parsed).is_file():
+                    raise ValueError("config file does not exist")
+            elif name == "max_tests":
+                parsed = int(value, 0)
+                if parsed <= 0:
+                    raise ValueError("max_tests must be positive")
+            elif name == "safe_mode":
+                if value.lower() not in {"on", "off", "true", "false", "1", "0"}:
+                    raise ValueError("ожидалось on/off")
+                parsed = value.lower() in {"on", "true", "1"}
             elif name in {"ssl", "insecure", "logging"}:
                 if value.lower() not in {"on", "off", "true", "false", "1", "0"}:
                     raise ValueError("ожидалось on/off")
@@ -283,7 +382,13 @@ class WSSmugglerShell:
             self.disconnect()
             return False
 
-    def execute_mode(self, verbose: bool = False) -> None:
+    def execute_mode(self, verbose: bool = False, experiment_id: str | None = None, group: str | None = None, category: str | None = None) -> None:
+        if self.options["mode"] == "automated":
+            try:
+                load_cases(self.options["payloads_file"])
+            except (OSError, ValueError, TypeError) as error:
+                console.print(f"[red]Конфигурация отклонена до подключения: {error}[/red]")
+                return
         if self.connection is None:
             if not self.connect():
                 return
@@ -294,7 +399,17 @@ class WSSmugglerShell:
             if self.connection is not None and self.connection.sock is None:
                 self.connection = None
         elif self.options["mode"] == "automated":
-            self.last_results = run_automated_mode(self.connection, verbose=verbose)
+            self.last_results = run_automated_mode(
+                self.connection,
+                config_path=self.options["payloads_file"],
+                verbose=verbose,
+                experiment_id=experiment_id,
+                target_id=self.options["target_id"],
+                group=group,
+                category=category,
+                max_tests=self.options["max_tests"],
+                safe_mode=self.options["safe_mode"],
+            )
         else:
             show_not_implemented("Запись сырого трафика")
 
@@ -320,12 +435,28 @@ class WSSmugglerShell:
             "port": self.options["port"],
             "path": self.options["path"],
             "ssl": self.options["ssl"],
-        }, metadata={"tool": "WS-Smuggler", "mode": self.options["mode"]})
+			"session_id": self.connection.session_id if self.connection else None,
+			"dump_paths": self.connection.traffic_dump_paths if self.connection else {},
+        }, metadata={
+            "tool": "WS-Smuggler",
+            "mode": self.options["mode"],
+            "configuration": {
+                "host": self.options["host"],
+                "port": self.options["port"],
+                "mode": self.options["mode"],
+                "target_id": self.options["target_id"],
+            },
+        })
         paths = []
+        json_path = None
+        stem = report_stem(report)
         if report_format in {"json", "all"}:
-            paths.append(export_json(report, output_dir=self.options["reports_dir"]))
+            json_path = export_json(report, stem=stem, output_dir=self.options["reports_dir"])
+            paths.append(json_path)
         if report_format in {"html", "all"}:
-            paths.append(export_html(report, output_dir=self.options["reports_dir"]))
+            if json_path is None:
+                json_path = Path(self.options["reports_dir"]) / f"{stem}.json"
+            paths.append(export_html(report, stem=json_path.stem, output_dir=self.options["reports_dir"], json_path=json_path))
         for path in paths:
             console.print(f"[green]Отчёт сохранён: {path}[/green]")
 

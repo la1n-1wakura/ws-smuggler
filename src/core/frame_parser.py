@@ -7,6 +7,10 @@ class IncompleteFrameError(ValueError):
     """Недостаточно байт для полного WebSocket-фрейма."""
 
 
+class FrameProtocolError(ValueError):
+	"""Нарушение структурного правила RFC 6455 во входящем frame."""
+
+
 @dataclass(frozen=True)
 class WebSocketFrame:
     fin: bool
@@ -21,6 +25,56 @@ class WebSocketFrame:
     @property
     def total_length(self) -> int:
         return self.header_length + len(self.payload)
+
+    @property
+    def is_control(self) -> bool:
+        return self.opcode >= 0x8
+
+    @property
+    def is_data(self) -> bool:
+        return self.opcode in {0x0, 0x1, 0x2}
+
+    @property
+    def close_code(self) -> int | None:
+        if self.opcode != 0x8 or len(self.payload) < 2:
+            return None
+        return int.from_bytes(self.payload[:2], "big")
+
+    @property
+    def close_reason(self) -> str:
+        if self.opcode != 0x8 or len(self.payload) <= 2:
+            return ""
+        return self.payload[2:].decode("utf-8", errors="replace")
+
+
+def _validate_close_payload(payload: bytes) -> None:
+    if len(payload) == 1:
+        raise FrameProtocolError("close frame payload must be empty or contain a 2-byte code")
+    if len(payload) < 2:
+        return
+    code = int.from_bytes(payload[:2], "big")
+    valid_codes = {1000, 1001, 1002, 1003, *range(1007, 1015)}
+    if code not in valid_codes:
+        raise FrameProtocolError(f"invalid close code: {code}")
+    try:
+        payload[2:].decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise FrameProtocolError("close reason is not valid UTF-8") from error
+
+
+def validate_frame(frame: WebSocketFrame) -> None:
+    """Проверить правила, не зависящие от предыдущих frame-ов."""
+    if frame.opcode not in {0x0, 0x1, 0x2, 0x8, 0x9, 0xA}:
+        raise FrameProtocolError(f"invalid opcode: 0x{frame.opcode:x}")
+    if frame.rsv1 or frame.rsv2 or frame.rsv3:
+        raise FrameProtocolError("RSV flags are set without a negotiated extension")
+    if frame.is_control:
+        if not frame.fin:
+            raise FrameProtocolError("control frames must have FIN set")
+        if len(frame.payload) > 125:
+            raise FrameProtocolError("control frame payload exceeds 125 bytes")
+        if frame.opcode == 0x8:
+            _validate_close_payload(frame.payload)
 
 
 def parse_frame(data: bytes, offset: int = 0) -> tuple[WebSocketFrame, int]:
@@ -81,4 +135,5 @@ def parse_frame(data: bytes, offset: int = 0) -> tuple[WebSocketFrame, int]:
         payload=payload,
         header_length=position - offset,
     )
+    validate_frame(frame)
     return frame, end

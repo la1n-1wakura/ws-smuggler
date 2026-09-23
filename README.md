@@ -272,6 +272,13 @@ handshake и не наследует состояние предыдущего �
 маскирование и расширенную длину, а также собирает frame из нескольких частей
 сетевого чтения.
 
+Входящие frames проходят protocol validation: проверяются opcode, RSV-флаги,
+правила control frames, `FIN`, максимальная длина 125 байт и последовательность
+fragmentation. Close frame дополнительно разбирается на `close_code` и
+`close_reason`. Ping/Pong классифицируются как control frames, а обычные text,
+binary и continuation frames — как data frames. Нарушения получают категорию
+`protocol_error`.
+
 ### Запись сырого трафика
 
 Для включения логирования в интерактивной консоли:
@@ -293,6 +300,8 @@ python3 src/main.py --host localhost --port 8080 --log-traffic
 - `*.rx.bin` — точные полученные байты;
 - `*.hex` — читаемый hex-дамп с направлением и timestamp;
 - `*.pcap` — стандартный PCAP с raw-записями сессии.
+- `*.events.jsonl` — по одной записи на каждый chunk с `session_id`, timestamp,
+  направлением `TX`/`RX` и размером.
 
 PCAP использует link type `USER0`, поскольку в нём сохраняются raw application
 chunks, а не искусственно реконструированные Ethernet/IP-заголовки. Открыть
@@ -302,10 +311,25 @@ chunks, а не искусственно реконструированные Et
 wireshark dumps/session-<timestamp>.pcap
 ```
 
+Такой PCAP предназначен для анализа последовательности raw application chunks
+в Wireshark и не является полноценным сетевым захватом TCP/IP. Поэтому Wireshark
+может не декодировать его как WebSocket автоматически: link type `USER0` не
+содержит Ethernet/IP/TCP-заголовков. Точные направления и timestamps доступны в
+hex-дампе и `*.events.jsonl`.
+
+Во время активной сессии пути и идентификатор можно посмотреть в консоли:
+
+```text
+ws-smuggler > show logging
+```
+
+Эти же `session_id` и `dump_paths` сохраняются в JSON-отчёте.
+
 Параметры подключения:
 
 | Сценарий                      | Команда                                                             |
-| Обычный WebSocket             | `python3 src/main.py --host localhost --port 8080`                  |
+| Локальный стенд: Nginx + Python | `python3 src/main.py --host localhost --port 8080 --ssl --insecure` |
+| Обычный WebSocket             | `python3 src/main.py --host example.com --port 80`                  |
 | TLS с проверкой сертификата   | `python3 src/main.py --host example.com --port 443 --ssl`           |
 | TLS с собственным CA          | `python3 src/main.py --host localhost --port 8443 --ssl --ca-file WebStand/certs/ca.crt` |
 | Лабораторный TLS без проверки | `python3 src/main.py --host localhost --port 8443 --ssl --insecure` |
@@ -351,6 +375,76 @@ docker compose -f WebStand/docker-compose.yml up --build
 - `8080` — Nginx + Python backend
 - `8081` — Nginx + Node.js backend
 - `8082` — HAProxy + Spring backend
+
+Интеграционные тесты WebStand запускаются после старта Docker Compose:
+
+```bash
+python3 -m pytest -m integration -q
+```
+
+Тесты проверяют TLS handshake, статус `101`, text echo и корректный Close-фрейм
+для всех трёх портов. Если стенд не запущен, соответствующий тест пропускается
+с сообщением, содержащим адрес и порт проблемного сервиса.
+
+Автоматическая матрица хранится в `config/default_payloads.json`. Каждый кейс
+имеет стабильный `experiment_id`, ожидаемый статус и список targets с
+`proxy_id`/`backend_id`. В интерактивной консоли можно воспроизвести один кейс:
+
+```text
+ws-smuggler > set host localhost
+ws-smuggler > set port 8080
+ws-smuggler > set ssl on
+ws-smuggler > set insecure on
+ws-smuggler > set target_id nginx-python
+ws-smuggler > use automated
+ws-smuggler > run invalid_rsv
+ws-smuggler > report json
+```
+
+JSON-отчёт содержит `experiment_id`, target, ожидаемый `expected_status`,
+фактический `actual_status` и `matches_expected`. Допустимые фактические
+классы: `response`, `closed`, `timeout`, `protocol_error`, `error`.
+
+Конфигурация автоматического режима валидируется до подключения. Для каждого
+кейса обязательны `experiment_id`, `name`, `category`, `expected_status` и
+`expected_response`; специальные сценарии также проверяют свои поля. Новый
+сценарий добавляется в `config/default_payloads.json` без изменения Python-кода.
+
+Доступны фильтры автоматического запуска:
+
+```text
+ws-smuggler > run text_echo
+ws-smuggler > run group desync
+ws-smuggler > run category protocol_error
+ws-smuggler > set max_tests 3
+ws-smuggler > set safe_mode on
+ws-smuggler > run
+```
+
+`safe_mode` исключает сценарии с `destructive: true`, а `max_tests` ограничивает
+количество запускаемых кейсов.
+
+Каждый результат также содержит `started_at`, `ended_at`, `duration_ms`,
+`handshake_duration_ms`, `response_wait_duration_ms`, `sent` и `received`.
+В секции `summary` сохраняются распределение статусов, суммарные байты,
+количество timeout и protocol close, успешные ответы и `anomaly_percentage`.
+
+Каждый экспорт получает уникальный `run_id`. JSON и HTML сохраняются парой с
+именем, содержащим дату, конфигурацию и run ID, поэтому предыдущие запуски не
+перезаписываются. Архив можно просмотреть из консоли:
+
+```text
+ws-smuggler > show reports
+```
+
+Два JSON-отчёта сравниваются командой:
+
+```text
+ws-smuggler > compare reports/ws-smuggler-<run-a>.json reports/ws-smuggler-<run-b>.json
+```
+
+Сравнение показывает новые, исчезнувшие и изменившиеся аномалии, а также
+изменившиеся summary-метрики. HTML-отчёт содержит ссылку на исходный JSON.
 
 ---
 
