@@ -57,3 +57,5 @@ build/
 
 __pycache__/
 *.py[cod]
+
+ws_smuggler.egg-info/*
