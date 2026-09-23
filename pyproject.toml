@@ -38,6 +38,11 @@ dev = [
 [project.scripts]
 ws-smuggler = "src.main:main"
 
+[project.urls]
+Homepage = "https://github.com/la1n-1wakura/ws-smuggler"
+Repository = "https://github.com/la1n-1wakura/ws-smuggler"
+Issues = "https://github.com/la1n-1wakura/ws-smuggler/issues"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]
