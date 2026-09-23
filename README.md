@@ -4,6 +4,18 @@ WS-Smuggler — учебный проект для анализа и демон�
 
 Проект предназначен для лабораторной проверки поведения прокси, балансировщиков и WebSocket-серверов при аномальных заголовках и нестандартных фреймах.
 
+> **Статус документации.** Эта версия README описывает воспроизводимый лабораторный протокол и результаты контрольного запуска от 22 сентября 2026 года. Результаты не являются доказательством уязвимости внешних систем: они относятся только к локальной конфигурации стенда, версиям образов и параметрам запуска, указанным ниже.
+
+## Содержание
+
+- [Модель угроз](#модель-угроз)
+- [Архитектура](#архитектура)
+- [Ограничения эксперимента и инструмента](#ограничения-эксперимента-и-инструмента)
+- [Методика измерений](#методика-измерений)
+- [Воспроизводимый эксперимент](#воспроизводимый-эксперимент)
+- [Результаты](#результаты)
+- [Этические и правовые ограничения](#этические-и-правовые-ограничения)
+
 ---
 ## Архитектура и Структура проекта
 
@@ -17,6 +29,96 @@ WS-Smuggler — учебный проект для анализа и демон�
 - сборка кадров вручную через побитовые операции;
 - локальный Docker-стенд для демонстрации трафика и проксирования;
 - базовые unit-тесты на проверку корректности handshake и frame-builder.
+
+## Модель угроз
+
+### Активы
+
+Исследуются корректность маршрутизации WebSocket-сообщений, согласованность состояния
+прокси и backend, а также доступность WebSocket-сервиса. Утилита не предназначена для
+получения данных из приложения и не моделирует аутентификацию, авторизацию или бизнес-
+логику backend.
+
+### Нарушитель и границы модели
+
+Нарушитель контролирует клиентское соединение и может отправлять произвольные байты
+после успешного HTTP Upgrade: изменять `FIN`, `RSV`, `opcode`, маскирование и заявленную
+длину payload. В модели присутствует промежуточный reverse proxy и отдельный WebSocket
+backend. Предполагается, что нарушитель не изменяет конфигурацию Docker, сертификаты,
+код proxy/backend и сетевой трафик между proxy и backend.
+
+Проверяется класс ошибок, при котором proxy и backend по-разному интерпретируют границы
+кадра или протокольные поля. Успешное завершение TCP-соединения, закрытие с кодом `1002`
+или обычный echo сами по себе не доказывают наличие или отсутствие уязвимости: вывод
+делается только по согласованному сравнению наблюдений proxy/backend и raw-трафика.
+
+### Сценарии воздействия
+
+В конфигурации `config/default_payloads.json` выделены baseline/control, desync,
+protocol error и fragmentation-сценарии. Desync-кейсы используют завышенную или
+заниженную длину и вложенный кадр; protocol-error-кейсы проверяют реакцию на
+недопустимый `opcode` и `RSV1`. По умолчанию деструктивные кейсы можно исключить
+командой `set safe_mode on`.
+
+## Архитектура
+
+```mermaid
+flowchart LR
+   C[WS-Smuggler CLI/TUI] -->|TCP/TLS, HTTP Upgrade| P1[Nginx + Python]
+   C -->|TCP/TLS, HTTP Upgrade| P2[Nginx + Node.js]
+   C -->|TCP/TLS, HTTP Upgrade| P3[HAProxy + Spring]
+   P1 --> B1[Python echo backend]
+   P2 --> B2[Node.js echo backend]
+   P3 --> B3[Spring echo backend]
+   C --> L[Traffic logger\nTX/RX, hex, PCAP, events]
+   C --> R[JSON/HTML reporter]
+```
+
+Все три внешних endpoint принимают TLS на `localhost` и портах `8080`, `8081` и
+`8082`. Сертификат генерируется контейнером `cert-generator` и передаётся proxy через
+именованный Docker volume. Backend-контейнеры доступны только внутри сети `webnet`.
+
+### Sequence diagram: handshake
+
+```mermaid
+sequenceDiagram
+   participant C as WS-Smuggler
+   participant P as Reverse proxy
+   participant B as WebSocket backend
+   C->>P: TCP connect + TLS ClientHello
+   P-->>C: TLS ServerHello + certificate
+   C->>P: HTTP GET /ws/\nUpgrade: websocket\nSec-WebSocket-Key
+   P->>B: Forward Upgrade request
+   B-->>P: HTTP 101 + Sec-WebSocket-Accept
+   P-->>C: HTTP 101 Switching Protocols
+   C->>C: Validate Sec-WebSocket-Accept
+   C->>P: Masked WebSocket frame
+   P->>B: Forward frame
+   B-->>P: Unmasked echo/control frame
+   P-->>C: Response frame
+```
+
+### Sequence diagram: fuzzing-сценарий
+
+```mermaid
+sequenceDiagram
+   participant C as WS-Smuggler automated mode
+   participant P as Proxy
+   participant B as Backend
+   C->>C: Load and validate JSON case
+   C->>P: New TLS + WebSocket session
+   C->>C: Build frame with custom length/RSV/opcode
+   C->>P: Send malformed frame and optional padding
+   P->>B: Proxy interpretation of bytes
+   alt accepted
+      B-->>P: Echo/response frame
+      P-->>C: response; classify status
+   else rejected
+      P-->>C: close/protocol error/timeout
+   end
+   C->>C: Save sent/received bytes, timings and classification
+   C->>C: Reconnect before the next case
+```
 
 ---
 
@@ -153,6 +255,7 @@ pip install -r requirements.txt
 ### 3. Запуск unit-тестов
 
 ```bash
+python3 -m pip install -e ".[dev]"
 python3 -m pytest -q tests/test_frames.py
 ```
 
@@ -385,6 +488,122 @@ python3 -m pytest -m integration -q
 Тесты проверяют TLS handshake, статус `101`, text echo и корректный Close-фрейм
 для всех трёх портов. Если стенд не запущен, соответствующий тест пропускается
 с сообщением, содержащим адрес и порт проблемного сервиса.
+
+Если `pytest` не установлен, команда завершится сообщением `No module named
+pytest`; в этом случае сначала выполните `python3 -m pip install -e ".[dev]"`.
+
+## Ограничения эксперимента и инструмента
+
+* Стенд локальный и изолирован Docker-сетью; результаты нельзя переносить на
+   произвольные версии Nginx, HAProxy, Python, Node.js или Spring без повторного
+   запуска.
+* Образы `nginx:alpine` и `haproxy:latest` не закреплены по digest, поэтому для
+   строгой научной воспроизводимости следует сохранить вывод `docker image inspect`
+   и зафиксировать версии образов.
+* Backend — минимальные echo-сервисы без реальной бизнес-логики, cookies,
+   авторизации, балансировки и конкурирующих клиентов. Проверяется только один
+   клиентский поток и один proxy на endpoint.
+* Инструмент работает с TCP/TLS и WebSocket-фреймами, но не реконструирует
+   полноценный TCP/IP capture: PCAP использует `USER0` и содержит raw application
+   chunks. Для анализа порядка байтов необходимо использовать `.hex`, `.events.jsonl`
+   и `.tx.bin`/`.rx.bin`.
+* `custom_length` намеренно создаёт неполные или лишние байты; поведение при этом
+   может зависеть от таймаутов, размера TCP-чтения и реализации proxy. Нельзя
+   интерпретировать единичный `timeout` как подтверждение smuggling.
+* TLS запускается с `--insecure` только потому, что сертификат стенда
+   самоподписанный. Этот режим запрещён для реальных систем.
+* Реализация не измеряет CPU, память, пропускную способность и задержку между
+   proxy и backend. Сохраняются wall-clock времена handshake/response и размеры
+   TX/RX, поэтому это функциональная, а не нагрузочная методика.
+
+## Методика измерений
+
+1. Установить зависимости и запустить Compose из корня репозитория.
+2. Дождаться healthcheck `cert-generator`, проверить `docker compose ps` и
+    сохранить версии: `docker compose images`.
+3. Для каждого target (`8080`, `8081`, `8082`) выполнить baseline-кейсы
+    `text_echo`, `binary_echo`, `ping_pong`; затем выполнить desync и
+    protocol-error группы. Каждый кейс запускается в новой WebSocket-сессии.
+4. Запускать с одинаковыми `path=/ws/`, timeout и TLS-параметрами. Для локального
+    стенда используется `--ssl --insecure`; случайные masking keys не являются
+    экспериментальным фактором и сохраняются в hex-логе.
+5. Включить `set logging on` или `--log-traffic`. Для каждого кейса фиксируются
+    `experiment_id`, target, ожидаемый/фактический статус, sent/received bytes,
+    handshake duration, response-wait duration, timestamps, error/close code и
+    `matches_expected`.
+6. Повторить каждый кейс минимум три раза при подготовке итоговой защиты; в отчёте
+    указывать число повторов, commit, digest образов и полную команду. В текущем
+    контрольном отчёте зафиксирован один прогон, поэтому он показывает наблюдение,
+    а не статистически устойчивую оценку.
+
+Команды для воспроизведения полного цикла:
+
+```bash
+docker compose -f WebStand/docker-compose.yml up --build -d
+docker compose -f WebStand/docker-compose.yml ps
+python3 -m pip install -e ".[dev]"
+python3 -m pytest -m integration -q
+python3 src/main.py --host localhost --port 8080 --path /ws/ --ssl --insecure --log-traffic
+# В TUI: set target_id nginx-python; use automated; run group safe; report all
+docker compose -f WebStand/docker-compose.yml down
+```
+
+Для воспроизведения конкретного кейса в TUI используйте, например, `run invalid_rsv`
+или `run category desync`. Перед деструктивными группами проверьте, что target —
+локальный Docker endpoint.
+
+## Ожидаемые результаты
+
+| Группа | Ожидаемое корректное поведение |
+|---|---|
+| baseline | `101`, echo с префиксом `Эхо:`, корректный opcode/payload |
+| control | ответ Pong (`opcode=10`) на Ping (`opcode=9`) |
+| desync | закрытие/`protocol_error`/timeout либо явно зафиксированное расхождение; неожиданное принятие trailing bytes требует анализа raw-лога |
+| protocol_error | закрытие соединения или protocol error, обычно close code `1002` |
+| fragmentation | буферизация до завершения либо корректное отклонение |
+
+## Результаты контрольного запуска
+
+Дата запуска: `2026-09-22`, target: `localhost:8080`, путь: `/ws/`, TLS: включён,
+проверка сертификата отключена (`--ssl --insecure`), режим: automated, число
+кейсов: 6. Исходный файл: `reports/ws-smuggler-report.json`. Полный запуск был
+выполнен командой:
+
+```bash
+python3 src/main.py --host 127.0.0.1 --port 8080 --path /ws/ --ssl --insecure
+```
+
+В отчёте зафиксировано: `responses=0`, `anomalies=6`. Это не означает, что все
+шесть кейсов являются уязвимостью: пять кейсов завершились закрытием соединения с
+close frame (`opcode=8`), что совместимо с защитным отклонением malformed frame;
+`text_echo` завершился ошибкой чтения полного кадра. Причину следует проверять по
+raw-дампам и версии стенда.
+
+| Стек | Endpoint | Результат smoke/integration | Результат fuzzing в сохранённом отчёте |
+|---|---:|---|---|
+| Nginx + Python | `8080` | контрольный запуск: `502 Bad Gateway` при handshake; backend не дал ожидаемый `101` | 6 аномалий в сохранённом отчёте: `text_echo` error, остальные 5 — close |
+| Nginx + Node.js | `8081` | контрольный запуск: `502 Bad Gateway` при handshake; backend не дал ожидаемый `101` | в текущем `reports/` не зафиксирован |
+| HAProxy + Spring | `8082` | требуется отдельный прогон и отчёт | в текущем `reports/` не зафиксирован |
+
+Таким образом, реальные результаты для `8081` и `8082` пока **не заявляются** как
+полученные. Для закрытия экспериментальной матрицы повторите тот же прогон для
+каждого порта, изменив `--port`, и сохраните три независимых JSON-отчёта. Это
+предотвращает подмену отсутствующих измерений ожидаемыми значениями.
+
+## Этические и правовые ограничения
+
+WS-Smuggler формирует специально некорректные сетевые данные и потенциально может
+нарушить доступность WebSocket-сервиса. Запуск разрешён только на собственном
+стенде или при явно оформленном письменном разрешении владельца системы. Нельзя
+сканировать публичные адреса, обходить авторизацию, отправлять payload с данными
+пользователей или сохранять чужие секреты в отчётах и дампах.
+
+Для диплома рекомендуется использовать только Docker-стенд из этого репозитория,
+обезличенные payload и локальный интерфейс loopback. Перед публикацией отчётов
+удалите IP, cookies, токены, ключи и содержимое, не относящееся к эксперименту.
+Соблюдайте применимое законодательство, правила провайдера и политику ответственного
+раскрытия. Автор проекта не предоставляет разрешение на тестирование сторонних
+систем и не принимает на себя ответственность за несанкционированное применение.
 
 Автоматическая матрица хранится в `config/default_payloads.json`. Каждый кейс
 имеет стабильный `experiment_id`, ожидаемый статус и список targets с
