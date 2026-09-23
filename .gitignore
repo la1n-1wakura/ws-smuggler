@@ -34,6 +34,7 @@ reports/*.json
 reports/*.html
 config/*.json
 !config/default_payloads.json
+!config/payloads.schema.json
 logs/
 WebStand/logs/
 WebStand/certs/*.crt
