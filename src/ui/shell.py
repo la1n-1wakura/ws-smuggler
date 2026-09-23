@@ -63,8 +63,8 @@ class WSSmugglerShell:
             "banner": None,
             "connect": None,
             "disconnect": None,
-            "run": {"verbose": None},
-            "start": {"verbose": None},
+            "run": {"verbose": None, "group": None, "category": None},
+            "start": {"verbose": None, "group": None, "category": None},
             "exit": None,
             "quit": None,
             "show": {"options": None, "logging": None, "last": None, "reports": None},
@@ -175,6 +175,9 @@ class WSSmugglerShell:
         table.add_row("connect", "Установить TCP/TLS и выполнить handshake")
         table.add_row("run", "Запустить выбранный режим")
         table.add_row("run verbose", "Запустить режим с подробным выводом кадров")
+        table.add_row("run <experiment_id>", "Запустить один сценарий по имени")
+        table.add_row("run group <name>", "Запустить группу сценариев из config/default_payloads.json")
+        table.add_row("run category <name>", "Запустить все сценарии выбранной категории")
         table.add_row("show last", "Показать подробности последнего запуска")
         table.add_row("report json|html|all", "Сохранить результаты в reports/")
         table.add_row("disconnect", "Закрыть активное соединение")

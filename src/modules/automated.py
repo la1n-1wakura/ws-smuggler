@@ -3,6 +3,7 @@
 import json
 import time
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -12,8 +13,14 @@ from core.frame_parser import WebSocketFrame
 from ui.views import console
 from rich.table import Table
 
+try:
+	import jsonschema
+except ImportError:  # pragma: no cover - jsonschema is an optional dependency
+	jsonschema = None
+
 
 DEFAULT_PAYLOADS = Path(__file__).resolve().parents[2] / "config" / "default_payloads.json"
+SCHEMA_PATH = Path(__file__).resolve().parents[2] / "config" / "payloads.schema.json"
 VALID_STATUSES = {"response", "closed", "timeout", "protocol_error", "error"}
 VALID_SCENARIOS = {"standard", "length_desync", "extra_padding", "nested_frame"}
 
@@ -23,8 +30,37 @@ def _require(condition: bool, message: str) -> None:
 		raise ValueError(f"invalid automated config: {message}")
 
 
+@lru_cache(maxsize=1)
+def _load_schema() -> dict[str, Any] | None:
+	"""Load the JSON Schema used to validate scenario configurations.
+
+	Returns ``None`` when the schema file is missing or ``jsonschema`` is not
+	installed; callers fall back to the manual structural checks below so a
+	missing optional dependency never disables validation entirely.
+	"""
+	if jsonschema is None or not SCHEMA_PATH.is_file():
+		return None
+	with SCHEMA_PATH.open(encoding="utf-8") as schema_file:
+		return json.load(schema_file)
+
+
+def validate_against_schema(data: Any) -> None:
+	"""Validate raw config data against the JSON Schema, before any semantic checks."""
+	schema = _load_schema()
+	if schema is None:
+		return
+	validator_class = jsonschema.validators.validator_for(schema)
+	validator = validator_class(schema)
+	errors = sorted(validator.iter_errors(data), key=lambda error: list(error.path))
+	if errors:
+		first = errors[0]
+		location = "/".join(str(part) for part in first.path) or "<root>"
+		raise ValueError(f"invalid automated config: schema violation at {location}: {first.message}")
+
+
 def validate_config(data: Any) -> list[dict[str, Any]]:
 	"""Validate the configuration before any connection is opened."""
+	validate_against_schema(data)
 	_require(isinstance(data, dict), "root must be an object")
 	_require(isinstance(data.get("cases"), list), "cases must be a list")
 	targets = data.get("targets", [])
@@ -35,6 +71,12 @@ def validate_config(data: Any) -> list[dict[str, Any]]:
 			_require(field in target, f"target missing {field}")
 	groups = data.get("groups", {})
 	_require(isinstance(groups, dict), "groups must be an object")
+	declared_categories = data.get("categories")
+	if declared_categories is not None:
+		_require(
+			isinstance(declared_categories, list) and all(isinstance(item, str) and item for item in declared_categories),
+			"categories must be a list of non-empty strings",
+		)
 	case_ids = set()
 	for case in data["cases"]:
 		_require(isinstance(case, dict), "each case must be an object")
@@ -45,6 +87,8 @@ def validate_config(data: Any) -> list[dict[str, Any]]:
 		_require(experiment_id not in case_ids, f"duplicate experiment_id: {experiment_id}")
 		case_ids.add(experiment_id)
 		_require(isinstance(case["category"], str) and bool(case["category"]), f"{experiment_id}: category is required")
+		if declared_categories is not None:
+			_require(case["category"] in declared_categories, f"{experiment_id}: unknown category {case['category']}")
 		expected = case["expected_status"]
 		expected_values = expected if isinstance(expected, list) else [expected]
 		_require(isinstance(expected_values, list) and all(value in VALID_STATUSES for value in expected_values), f"{experiment_id}: invalid expected_status")

@@ -1,5 +1,6 @@
 {
   "version": "1.0",
+  "categories": ["baseline", "control", "desync", "protocol_error", "fragmentation"],
   "targets": [
     {"target_id": "nginx-python", "proxy_id": "nginx", "backend_id": "python", "port": 8080},
     {"target_id": "nginx-nodejs", "proxy_id": "nginx", "backend_id": "nodejs", "port": 8081},

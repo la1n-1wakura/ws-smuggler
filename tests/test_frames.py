@@ -207,8 +207,31 @@ def test_automated_config_supports_groups_categories_limits_and_safe_mode(tmp_pa
 def test_invalid_automated_config_is_rejected():
     from modules.automated import validate_config
 
-    with pytest.raises(ValueError, match="case missing category"):
+    with pytest.raises(ValueError, match="category"):
         validate_config({"cases": [{"experiment_id": "broken", "name": "broken"}]})
+
+
+def test_invalid_json_schema_is_rejected_before_semantic_checks():
+    from modules.automated import validate_config
+
+    with pytest.raises(ValueError, match="schema violation"):
+        validate_config({"cases": "not-a-list"})
+
+
+def test_unknown_category_is_rejected_when_categories_declared():
+    from modules.automated import validate_config
+
+    with pytest.raises(ValueError, match="unknown category"):
+        validate_config({
+            "categories": ["baseline"],
+            "cases": [{
+                "experiment_id": "broken",
+                "name": "broken",
+                "category": "not-declared",
+                "expected_status": "response",
+                "expected_response": {},
+            }],
+        })
 
 
 def test_matrix_cases_have_ids_targets_and_can_be_replayed():
